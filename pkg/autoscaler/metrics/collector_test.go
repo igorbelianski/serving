@@ -1,5 +1,5 @@
 /*
-Copyright 2019 The Knative Authors.
+Copyright 2019 The Knative Authors
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -78,7 +78,7 @@ func TestMetricCollectorCRUD(t *testing.T) {
 		coll := NewMetricCollector(failingFactory, logger)
 		got := coll.CreateOrUpdate(&defaultMetric)
 
-		if got != want {
+		if !errors.Is(got, want) {
 			t.Errorf("Create() = %v, want %v", got, want)
 		}
 	})
@@ -92,7 +92,7 @@ func TestMetricCollectorCRUD(t *testing.T) {
 
 		got := coll.collections[key].metric
 		if !cmp.Equal(&defaultMetric, got) {
-			t.Errorf("Get() didn't return the same metric: %v", cmp.Diff(&defaultMetric, got))
+			t.Error("Get() didn't return the same metric:", cmp.Diff(&defaultMetric, got))
 		}
 
 		defaultMetric.Spec.ScrapeTarget = "new-target"
@@ -103,7 +103,7 @@ func TestMetricCollectorCRUD(t *testing.T) {
 
 		got = coll.collections[key].metric
 		if !cmp.Equal(&defaultMetric, got) {
-			t.Errorf("Update() didn't return the same metric: %v", cmp.Diff(&defaultMetric, got))
+			t.Error("Update() didn't return the same metric:", cmp.Diff(&defaultMetric, got))
 		}
 
 		newURL := (coll.collections[key]).scraper.(*testScraper).url
@@ -111,9 +111,7 @@ func TestMetricCollectorCRUD(t *testing.T) {
 			t.Errorf("Updated scraper URL = %s, want: %s, diff: %s", got, want, cmp.Diff(got, want))
 		}
 
-		if err := coll.Delete(defaultNamespace, defaultName); err != nil {
-			t.Errorf("Delete() = %v, want no error", err)
-		}
+		coll.Delete(defaultNamespace, defaultName)
 	})
 }
 
@@ -174,10 +172,10 @@ func TestMetricCollectorScraperMovingTime(t *testing.T) {
 	})
 
 	if _, _, err := coll.StableAndPanicConcurrency(metricKey, now); err != nil {
-		t.Errorf("StableAndPanicConcurrency() = %v", err)
+		t.Error("StableAndPanicConcurrency() =", err)
 	}
 	if _, _, err := coll.StableAndPanicRPS(metricKey, now); err != nil {
-		t.Errorf("StableAndPanicRPS() = %v", err)
+		t.Error("StableAndPanicRPS() =", err)
 	}
 	if panicConcurrency != wantPConcurrency {
 		t.Errorf("PanicConcurrency() = %v, want %v", panicConcurrency, wantPConcurrency)
@@ -245,10 +243,10 @@ func TestMetricCollectorScraper(t *testing.T) {
 	})
 
 	if _, _, err := coll.StableAndPanicConcurrency(metricKey, now); err != nil {
-		t.Errorf("StableAndPanicConcurrency() = %v", err)
+		t.Error("StableAndPanicConcurrency() =", err)
 	}
 	if _, _, err := coll.StableAndPanicRPS(metricKey, now); err != nil {
-		t.Errorf("StableAndPanicRPS() = %v", err)
+		t.Error("StableAndPanicRPS() =", err)
 	}
 	if panicConcurrency != wantPConcurrency {
 		t.Errorf("PanicConcurrency() = %v, want %v", panicConcurrency, wantPConcurrency)
@@ -284,10 +282,10 @@ func TestMetricCollectorScraper(t *testing.T) {
 
 	// Deleting the metric should cause a calculation error.
 	coll.Delete(defaultNamespace, defaultName)
-	if _, _, err := coll.StableAndPanicConcurrency(metricKey, now); err != ErrNotCollecting {
+	if _, _, err := coll.StableAndPanicConcurrency(metricKey, now); !errors.Is(err, ErrNotCollecting) {
 		t.Errorf("StableAndPanicConcurrency() = %v, want %v", err, ErrNotCollecting)
 	}
-	if _, _, err := coll.StableAndPanicRPS(metricKey, now); err != ErrNotCollecting {
+	if _, _, err := coll.StableAndPanicRPS(metricKey, now); !errors.Is(err, ErrNotCollecting) {
 		t.Errorf("StableAndPanicRPS() = %v, want %v", err, ErrNotCollecting)
 	}
 }
@@ -328,10 +326,10 @@ func TestMetricCollectorNoScraper(t *testing.T) {
 	gotConcurrency, panicConcurrency, errCon := coll.StableAndPanicConcurrency(metricKey, now)
 	gotRPS, panicRPS, errRPS := coll.StableAndPanicRPS(metricKey, now)
 	if errCon != nil {
-		t.Errorf("StableAndPanicConcurrency() = %v", errCon)
+		t.Error("StableAndPanicConcurrency() =", errCon)
 	}
 	if errRPS != nil {
-		t.Errorf("StableAndPanicRPS() = %v", errRPS)
+		t.Error("StableAndPanicRPS() =", errRPS)
 	}
 	if panicConcurrency != wantStat {
 		t.Errorf("PanicConcurrency() = %v, want %v", panicConcurrency, wantStat)
@@ -359,7 +357,7 @@ func TestMetricCollectorNoScraper(t *testing.T) {
 	gotConcurrency, _, _ = coll.StableAndPanicConcurrency(metricKey, now)
 	gotRPS, _, err := coll.StableAndPanicRPS(metricKey, now)
 	if err != nil {
-		t.Errorf("StableAndPanicRPS() = %v", err)
+		t.Error("StableAndPanicRPS() =", err)
 	}
 	if gotRPS != wantRC {
 		t.Errorf("StableRPS() = %v, want %v", gotRPS, wantRC)
@@ -392,11 +390,11 @@ func TestMetricCollectorNoDataError(t *testing.T) {
 	// Verify correct error is returned if ScrapeTarget is set
 	_, _, errCon := coll.StableAndPanicConcurrency(metricKey, now)
 	_, _, errRPS := coll.StableAndPanicRPS(metricKey, now)
-	if errCon != ErrNoData {
-		t.Errorf("StableAndPanicConcurrency() = %v", errCon)
+	if !errors.Is(errCon, ErrNoData) {
+		t.Error("StableAndPanicConcurrency() =", errCon)
 	}
-	if errRPS != ErrNoData {
-		t.Errorf("StableAndPanicRPS() = %v", errRPS)
+	if !errors.Is(errRPS, ErrNoData) {
+		t.Error("StableAndPanicRPS() =", errRPS)
 	}
 }
 
@@ -562,7 +560,7 @@ func TestMetricCollectorError(t *testing.T) {
 			}
 
 			// Make sure the error is surfaced via 'CreateOrUpdate', which is called in the reconciler.
-			if err := coll.CreateOrUpdate(testMetric); err != test.expectedError {
+			if err := coll.CreateOrUpdate(testMetric); !errors.Is(err, test.expectedError) {
 				t.Fatalf("CreateOrUpdate = %v, want %v", err, test.expectedError)
 			}
 

@@ -221,17 +221,6 @@ func TestBreakerUpdateConcurrency(t *testing.T) {
 		t.Errorf("Capacity() = %d, want: %d", got, want)
 	}
 
-	if err := b.UpdateConcurrency(-2); err != ErrUpdateCapacity {
-		t.Errorf("UpdateConcurrency = %v, want: %v", err, ErrUpdateCapacity)
-	}
-}
-
-func TestBreakerUpdateConcurrencyOverlow(t *testing.T) {
-	params := BreakerParams{QueueDepth: 1, MaxConcurrency: 1, InitialCapacity: 0}
-	b := NewBreaker(params)
-	if err := b.UpdateConcurrency(2); err != ErrUpdateCapacity {
-		t.Errorf("UpdateConcurrency = %v, want: %v", err, ErrUpdateCapacity)
-	}
 }
 
 // Test empty semaphore, token cannot be acquired
@@ -285,12 +274,22 @@ func TestSemaphoreAcquireHasCapacity(t *testing.T) {
 func TestSemaphoreRelease(t *testing.T) {
 	sem := newSemaphore(1, 1)
 	sem.acquire(context.Background())
-	if err := sem.release(); err != nil {
-		t.Errorf("release = %v; want: %v", err, nil)
-	}
-	if err := sem.release(); err != ErrRelease {
-		t.Errorf("release = %v; want: %v", err, ErrRelease)
-	}
+	func() {
+		defer func() {
+			if e := recover(); e != nil {
+				t.Error("Expected no panic, got message:", e)
+			}
+			sem.release()
+		}()
+	}()
+	func() {
+		defer func() {
+			if e := recover(); e == nil {
+				t.Error("Expected panic, but got none")
+			}
+		}()
+		sem.release()
+	}()
 }
 
 func TestSemaphoreUpdateCapacity(t *testing.T) {
@@ -303,28 +302,6 @@ func TestSemaphoreUpdateCapacity(t *testing.T) {
 	sem.updateCapacity(initialCapacity + 2)
 	if got, want := sem.Capacity(), 3; got != want {
 		t.Errorf("Capacity = %d, want: %d", got, want)
-	}
-}
-
-func TestSemaphoreUpdateCapacityOverflow(t *testing.T) {
-	sem := newSemaphore(2, 0)
-	if err := sem.updateCapacity(3); err != ErrUpdateCapacity {
-		t.Errorf("updateCapacity = %v, want: %v", err, ErrUpdateCapacity)
-	}
-}
-
-func TestSemaphoreUpdateCapacityOutOfBound(t *testing.T) {
-	sem := newSemaphore(1, 1)
-	sem.acquire(context.Background())
-	if err := sem.updateCapacity(-1); err != ErrUpdateCapacity {
-		t.Errorf("updateCapacity = %v, want: %v", err, ErrUpdateCapacity)
-	}
-}
-
-func TestSemaphoreUpdateCapacityDoNothing(t *testing.T) {
-	sem := newSemaphore(1, 1)
-	if err := sem.updateCapacity(1); err != nil {
-		t.Errorf("updateCapacity = %v, want: %v", err, nil)
 	}
 }
 

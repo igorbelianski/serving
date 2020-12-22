@@ -168,7 +168,7 @@ func TestWebSocketViaActivator(t *testing.T) {
 	}
 
 	// Wait for the activator endpoints to equalize.
-	if err := waitForActivatorEndpoints(&testContext{
+	if err := waitForActivatorEndpoints(&TestContext{
 		t:         t,
 		resources: resources,
 		clients:   clients,
@@ -261,7 +261,7 @@ func TestWebSocketBlueGreenRoute(t *testing.T) {
 	// We'll just use the service URL.
 	tealURL := service.Status.URL.URL().Hostname()
 
-	// But since Istio network programming takes some time to take effect
+	// But since network programming takes some time to take effect
 	// and it doesn't have a Status, we'll probe `green` until it's ready first.
 	if err := validateWebSocketConnection(t, clients, green); err != nil {
 		t.Fatal("Error initializing WS connection:", err)
@@ -275,7 +275,7 @@ func TestWebSocketBlueGreenRoute(t *testing.T) {
 	)
 	resps, err := webSocketResponseFreqs(t, clients, tealURL, numReqs)
 	if err != nil {
-		t.Errorf("Failed to send and receive websocket messages: %v", err)
+		t.Error("Failed to send and receive websocket messages:", err)
 	}
 	if len(resps) != 2 {
 		t.Errorf("Number of responses: %d, want: 2", len(resps))

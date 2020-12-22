@@ -15,10 +15,10 @@
 # limitations under the License.
 
 # This script provides helper methods to perform cluster actions.
-source $(dirname $0)/../vendor/knative.dev/test-infra/scripts/e2e-tests.sh
+source $(dirname $0)/../vendor/knative.dev/hack/e2e-tests.sh
 source $(dirname $0)/e2e-networking-library.sh
 
-CERT_MANAGER_VERSION="0.12.0"
+CERT_MANAGER_VERSION="latest"
 # Since default is istio, make default ingress as istio
 INGRESS_CLASS=${INGRESS_CLASS:-istio.ingress.networking.knative.dev}
 ISTIO_VERSION=""
@@ -27,10 +27,11 @@ KOURIER_VERSION=""
 AMBASSADOR_VERSION=""
 CONTOUR_VERSION=""
 CERTIFICATE_CLASS=""
+# Only build linux/amd64 bit images
+KO_FLAGS="--platform=linux/amd64"
 
 HTTPS=0
 MESH=0
-INSTALL_MONITORING=0
 
 # List of custom YAMLs to install, if specified (space-separated).
 INSTALL_CUSTOM_YAMLS=""
@@ -80,10 +81,6 @@ function parse_flags() {
       ;;
     --https)
       readonly HTTPS=1
-      return 1
-      ;;
-    --install-monitoring)
-      readonly INSTALL_MONITORING=1
       return 1
       ;;
     --custom-yamls)
@@ -201,6 +198,10 @@ function install_knative_serving_standard() {
     echo "CRD YAML: ${SERVING_CRD_YAML}"
     kubectl apply -f "${SERVING_CRD_YAML}" || return 1
     UNINSTALL_LIST+=( "${SERVING_CRD_YAML}" )
+
+    echo "DOMAIN MAPPING CRD YAML: ${SERVING_DOMAINMAPPING_CRD_YAML}"
+    kubectl apply -f "${SERVING_DOMAINMAPPING_CRD_YAML}" || return 1
+    UNINSTALL_LIST+=( "${SERVING_DOMAINMAPPING_CRD_YAML}" )
   else
     # Download the latest release of Knative Serving.
     local url="https://github.com/knative/serving/releases/download/${LATEST_SERVING_RELEASE_VERSION}"
@@ -237,7 +238,7 @@ function install_knative_serving_standard() {
     install_kong || return 1
   else
     if [[ "$1" == "HEAD" ]]; then
-      install_istio "./third_party/net-istio.yaml" || return 1
+      install_istio "./third_party/istio-latest/net-istio.yaml" || return 1
     else
       # Download the latest release of net-istio.
       local url="https://github.com/knative/net-istio/releases/download/${LATEST_NET_ISTIO_RELEASE_VERSION}"
@@ -253,7 +254,9 @@ function install_knative_serving_standard() {
   echo ">> Installing Cert-Manager"
   readonly INSTALL_CERT_MANAGER_YAML="./third_party/cert-manager-${CERT_MANAGER_VERSION}/cert-manager.yaml"
   echo "Cert Manager YAML: ${INSTALL_CERT_MANAGER_YAML}"
-  kubectl apply -f "${INSTALL_CERT_MANAGER_YAML}" --validate=false || return 1
+  # We skip installing cert-manager if it has been installed as "kubectl apply" will be stuck when
+  # cert-manager has been installed. https://github.com/jetstack/cert-manager/issues/3367
+  kubectl get ns cert-manager || kubectl apply -f "${INSTALL_CERT_MANAGER_YAML}" --validate=false || return 1
   UNINSTALL_LIST+=( "${INSTALL_CERT_MANAGER_YAML}" )
   readonly NET_CERTMANAGER_YAML="./third_party/cert-manager-${CERT_MANAGER_VERSION}/net-certmanager.yaml"
   echo "net-certmanager YAML: ${NET_CERTMANAGER_YAML}"
@@ -264,41 +267,30 @@ function install_knative_serving_standard() {
   UNINSTALL_LIST+=( "${CERT_YAML_NAME}" )
 
   echo ">> Installing Knative serving"
-  HA_COMPONENTS+=( "controller" "webhook" "autoscaler-hpa" )
+  HA_COMPONENTS+=( "controller" "webhook" "autoscaler-hpa" "autoscaler" "domainmapping-webhook" )
   if [[ "$1" == "HEAD" ]]; then
     local CORE_YAML_NAME=${TMP_DIR}/${SERVING_CORE_YAML##*/}
     sed "s/namespace: ${KNATIVE_DEFAULT_NAMESPACE}/namespace: ${SYSTEM_NAMESPACE}/g" ${SERVING_CORE_YAML} > ${CORE_YAML_NAME}
     local HPA_YAML_NAME=${TMP_DIR}/${SERVING_HPA_YAML##*/}
     sed "s/namespace: ${KNATIVE_DEFAULT_NAMESPACE}/namespace: ${SYSTEM_NAMESPACE}/g" ${SERVING_HPA_YAML} > ${HPA_YAML_NAME}
+    local DOMAINMAPPING_YAML_NAME=${TMP_DIR}/${SERVING_DOMAINMAPPING_YAML##*/}
+    sed "s/namespace: ${KNATIVE_DEFAULT_NAMESPACE}/namespace: ${SYSTEM_NAMESPACE}/g" ${SERVING_DOMAINMAPPING_YAML} > ${DOMAINMAPPING_YAML_NAME}
     local POST_INSTALL_JOBS_YAML_NAME=${TMP_DIR}/${SERVING_POST_INSTALL_JOBS_YAML##*/}
     sed "s/namespace: ${KNATIVE_DEFAULT_NAMESPACE}/namespace: ${SYSTEM_NAMESPACE}/g" ${SERVING_POST_INSTALL_JOBS_YAML} > ${POST_INSTALL_JOBS_YAML_NAME}
 
-    echo "Knative YAML: ${CORE_YAML_NAME} and ${HPA_YAML_NAME}"
+    echo "Knative YAML: ${CORE_YAML_NAME} and ${HPA_YAML_NAME} and ${DOMAINMAPPING_YAML_NAME}"
     kubectl apply \
 	    -f "${CORE_YAML_NAME}" \
+	    -f "${DOMAINMAPPING_YAML_NAME}" \
 	    -f "${HPA_YAML_NAME}" || return 1
-    UNINSTALL_LIST+=( "${CORE_YAML_NAME}" "${HPA_YAML_NAME}" )
+    UNINSTALL_LIST+=( "${CORE_YAML_NAME}" "${HPA_YAML_NAME}" "${DOMAINMAPPING_YAML_NAME}" )
     kubectl create -f ${POST_INSTALL_JOBS_YAML_NAME}
-
-    if (( INSTALL_MONITORING )); then
-      echo ">> Installing Monitoring"
-      echo "Knative Monitoring YAML: ${MONITORING_YAML}"
-      kubectl apply -f "${MONITORING_YAML}" || return 1
-      UNINSTALL_LIST+=( "${MONITORING_YAML}" )
-    fi
   else
     echo "Knative YAML: ${SERVING_RELEASE_YAML}"
     # We use ko because it has better filtering support for CRDs.
     ko apply -f "${SERVING_RELEASE_YAML}" || return 1
     ko create -f "${SERVING_POST_INSTALL_JOBS_YAML}" || return 1
     UNINSTALL_LIST+=( "${SERVING_RELEASE_YAML}" )
-
-    if (( INSTALL_MONITORING )); then
-      echo ">> Installing Monitoring"
-      echo "Knative Monitoring YAML: ${2}"
-      kubectl apply -f "${2}" || return 1
-      UNINSTALL_LIST+=( "${2}" )
-    fi
   fi
 
   echo ">> Configuring the default Ingress: ${INGRESS_CLASS}"
@@ -399,6 +391,12 @@ function test_setup() {
   # Clean up kail so it doesn't interfere with job shutting down
   add_trap "kill $kail_pid || true" EXIT
 
+  # Capture lease changes
+  kubectl get lease -A -w -o yaml > ${ARTIFACTS}/leases-$(basename ${E2E_SCRIPT}).log &
+  local leases_pid=$!
+  # Clean up the lease logging so it doesn't interfere with job shutting down
+  add_trap "kill $leases_pid || true" EXIT
+
   echo ">> Waiting for Serving components to be running..."
   wait_until_pods_running ${SYSTEM_NAMESPACE} || return 1
 
@@ -408,8 +406,6 @@ function test_setup() {
   if (( MESH )); then
     kubectl label namespace serving-tests istio-injection=enabled
     kubectl label namespace serving-tests-alt istio-injection=enabled
-    kubectl label namespace serving-tests-security istio-injection=enabled
-    ko apply ${KO_FLAGS} -f ${TEST_CONFIG_DIR}/security/ --selector=test.knative.dev/dependency=istio-sidecar || return 1
   fi
 
   echo ">> Uploading test images..."
@@ -420,11 +416,12 @@ function test_setup() {
 
   echo ">> Waiting for Ingress provider to be running..."
   wait_until_ingress_running || return 1
+}
 
-  if (( INSTALL_MONITORING )); then
-    echo ">> Waiting for Monitoring to be running..."
-    wait_until_pods_running knative-monitoring || return 1
-  fi
+# Apply the logging config for testing. This should be called after test_setup has been triggered.
+function test_logging_config_setup() {
+  echo ">> Setting up test logging config..."
+  ko apply ${KO_FLAGS} -f ${TMP_DIR}/test/config/config-logging.yaml || return 1
 }
 
 # Delete test resources
@@ -432,16 +429,12 @@ function test_teardown() {
   local TEST_CONFIG_DIR=${TMP_DIR}/test/config
   echo ">> Removing test resources (${TEST_CONFIG_DIR}/)"
   ko delete --ignore-not-found=true --now -f ${TEST_CONFIG_DIR}/
-  if (( MESH )); then
-    ko delete --ignore-not-found=true --now -f ${TEST_CONFIG_DIR}/security/
-  fi
+
   echo ">> Ensuring test namespaces are clean"
   kubectl delete all --all --ignore-not-found --now --timeout 60s -n serving-tests
   kubectl delete --ignore-not-found --now --timeout 60s namespace serving-tests
   kubectl delete all --all --ignore-not-found --now --timeout 60s -n serving-tests-alt
   kubectl delete --ignore-not-found --now --timeout 60s namespace serving-tests-alt
-  kubectl delete all --all --ignore-not-found --now --timeout 60s -n serving-tests-security
-  kubectl delete --ignore-not-found --now --timeout 60s namespace serving-tests-security
 }
 
 # Dump more information when test fails.

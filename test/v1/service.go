@@ -20,8 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-
-	"github.com/mattbaird/jsonpatch"
+	"testing"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -36,8 +35,6 @@ import (
 	serviceresourcenames "knative.dev/serving/pkg/reconciler/service/resources/names"
 	rtesting "knative.dev/serving/pkg/testing/v1"
 	"knative.dev/serving/test"
-
-	_ "knative.dev/pkg/metrics/testing"
 )
 
 func validateCreatedServiceStatus(clients *test.Clients, names *test.ResourceNames) error {
@@ -90,25 +87,11 @@ func GetResourceObjects(clients *test.Clients, names test.ResourceNames) (*Resou
 	}, nil
 }
 
-// CreateServiceReadyForMultiContainer creates a new Service for multi container in 'Ready' state . This function expects Service
-// name passed in through 'names'. Names is updated with the Route and Configuration created by the Service
-// and ResourceObjects is returned with the Service, Route, and Configuration objects.
-// Returns error if the service does not come up correctly.
-func CreateServiceReadyForMultiContainer(t pkgTest.T, clients *test.Clients, names *test.ResourceNames, fopt ...rtesting.ServiceOption) (*ResourceObjects, error) {
-	t.Log("Creating a new Service", "service", names.Service)
-	svc := rtesting.ServiceWithoutNamespace(names.Service, fopt...)
-	svc, err := createService(t, clients, svc)
-	if err != nil {
-		return nil, err
-	}
-	return getResourceObjects(t, clients, names, svc)
-}
-
 // CreateServiceReady creates a new Service in state 'Ready'. This function expects Service and Image name
 // passed in through 'names'.  Names is updated with the Route and Configuration created by the Service
 // and ResourceObjects is returned with the Service, Route, and Configuration objects.
 // Returns error if the service does not come up correctly.
-func CreateServiceReady(t pkgTest.T, clients *test.Clients, names *test.ResourceNames, fopt ...rtesting.ServiceOption) (*ResourceObjects, error) {
+func CreateServiceReady(t testing.TB, clients *test.Clients, names *test.ResourceNames, fopt ...rtesting.ServiceOption) (*ResourceObjects, error) {
 	if names.Image == "" {
 		return nil, fmt.Errorf("expected non-empty Image name; got Image=%v", names.Image)
 	}
@@ -120,7 +103,7 @@ func CreateServiceReady(t pkgTest.T, clients *test.Clients, names *test.Resource
 	return getResourceObjects(t, clients, names, svc)
 }
 
-func getResourceObjects(t pkgTest.T, clients *test.Clients, names *test.ResourceNames, svc *v1.Service) (*ResourceObjects, error) {
+func getResourceObjects(t testing.TB, clients *test.Clients, names *test.ResourceNames, svc *v1.Service) (*ResourceObjects, error) {
 	// Populate Route and Configuration Objects with name
 	names.Route = serviceresourcenames.Route(svc)
 	names.Config = serviceresourcenames.Configuration(svc)
@@ -150,12 +133,12 @@ func getResourceObjects(t pkgTest.T, clients *test.Clients, names *test.Resource
 }
 
 // CreateService creates a service in namespace with the name names.Service and names.Image
-func CreateService(t pkgTest.T, clients *test.Clients, names test.ResourceNames, fopt ...rtesting.ServiceOption) (*v1.Service, error) {
+func CreateService(t testing.TB, clients *test.Clients, names test.ResourceNames, fopt ...rtesting.ServiceOption) (*v1.Service, error) {
 	svc := Service(names, fopt...)
 	return createService(t, clients, svc)
 }
 
-func createService(t pkgTest.T, clients *test.Clients, service *v1.Service) (svc *v1.Service, err error) {
+func createService(t testing.TB, clients *test.Clients, service *v1.Service) (svc *v1.Service, err error) {
 	test.AddTestAnnotation(t, service.ObjectMeta)
 	LogResourceObject(t, ResourceObjects{Service: service})
 	return svc, reconciler.RetryTestErrors(func(int) (err error) {
@@ -166,7 +149,7 @@ func createService(t pkgTest.T, clients *test.Clients, service *v1.Service) (svc
 
 // PatchService patches the existing service passed in with the applied mutations.
 // Returns the latest service object
-func PatchService(t pkgTest.T, clients *test.Clients, service *v1.Service, fopt ...rtesting.ServiceOption) (svc *v1.Service, err error) {
+func PatchService(t testing.TB, clients *test.Clients, service *v1.Service, fopt ...rtesting.ServiceOption) (svc *v1.Service, err error) {
 	newSvc := service.DeepCopy()
 	for _, opt := range fopt {
 		opt(newSvc)
@@ -183,13 +166,13 @@ func PatchService(t pkgTest.T, clients *test.Clients, service *v1.Service, fopt 
 }
 
 // UpdateServiceRouteSpec updates a service to use the route name in names.
-func UpdateServiceRouteSpec(t pkgTest.T, clients *test.Clients, names test.ResourceNames, rs v1.RouteSpec) (svc *v1.Service, err error) {
-	patches := []jsonpatch.JsonPatchOperation{{
-		Operation: "replace",
-		Path:      "/spec/traffic",
-		Value:     rs.Traffic,
+func UpdateServiceRouteSpec(t testing.TB, clients *test.Clients, names test.ResourceNames, rs v1.RouteSpec) (svc *v1.Service, err error) {
+	patch := []map[string]interface{}{{
+		"op":    "replace",
+		"path":  "/spec/traffic",
+		"value": rs.Traffic,
 	}}
-	patchBytes, err := json.Marshal(patches)
+	patchBytes, err := json.Marshal(patch)
 	if err != nil {
 		return nil, err
 	}
@@ -207,10 +190,9 @@ func WaitForServiceLatestRevision(clients *test.Clients, names test.ResourceName
 	if err := WaitForServiceState(clients.ServingClient, names.Service, func(s *v1.Service) (bool, error) {
 		if s.Status.LatestCreatedRevisionName != names.Revision {
 			revisionName = s.Status.LatestCreatedRevisionName
-			// We also check that the revision is pinned, meaning it's not a stale revision.
 			// Without this it might happen that the latest created revision is later overridden by a newer one
 			// and the following check for LatestReadyRevisionName would fail.
-			if revErr := CheckRevisionState(clients.ServingClient, revisionName, IsRevisionPinned); revErr != nil {
+			if revErr := CheckRevisionState(clients.ServingClient, revisionName, IsRevisionRoutingActive); revErr != nil {
 				return false, nil
 			}
 			return true, nil
@@ -231,10 +213,13 @@ func WaitForServiceLatestRevision(clients *test.Clients, names test.ResourceName
 // Service returns a Service object in namespace with the name names.Service
 // that uses the image specified by names.Image.
 func Service(names test.ResourceNames, fopt ...rtesting.ServiceOption) *v1.Service {
-	a := append([]rtesting.ServiceOption{
-		rtesting.WithConfigSpec(ConfigurationSpec(pkgTest.ImagePath(names.Image))),
-	}, fopt...)
-	return rtesting.ServiceWithoutNamespace(names.Service, a...)
+	if names.Image != "" && len(names.Sidecars) == 0 {
+		a := append([]rtesting.ServiceOption{
+			rtesting.WithConfigSpec(ConfigurationSpec(pkgTest.ImagePath(names.Image))),
+		}, fopt...)
+		return rtesting.ServiceWithoutNamespace(names.Service, a...)
+	}
+	return rtesting.ServiceWithoutNamespace(names.Service, fopt...)
 }
 
 // WaitForServiceState polls the status of the Service called name

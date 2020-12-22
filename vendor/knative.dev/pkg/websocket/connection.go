@@ -20,8 +20,10 @@ import (
 	"bytes"
 	"encoding/gob"
 	"errors"
+	"fmt"
 	"io"
 	"io/ioutil"
+	"net/http/httputil"
 	"sync"
 	"time"
 
@@ -64,6 +66,9 @@ type ManagedConnection struct {
 	closeChan chan struct{}
 	closeOnce sync.Once
 
+	establishChan chan struct{}
+	establishOnce sync.Once
+
 	// Used to capture asynchronous processes to be waited
 	// on when shutting the connection down.
 	processingWg sync.WaitGroup
@@ -92,6 +97,25 @@ func NewDurableSendingConnection(target string, logger *zap.SugaredLogger) *Mana
 	return NewDurableConnection(target, nil, logger)
 }
 
+// NewDurableSendingConnectionGuaranteed creates a new websocket connection
+// that can only send messages to the endpoint it connects to. It returns
+// the connection if the connection can be established within the given
+// `duration`. Otherwise it returns the ErrConnectionNotEstablished error.
+//
+// The connection will continuously be kept alive and reconnected
+// in case of a loss of connectivity.
+func NewDurableSendingConnectionGuaranteed(target string, duration time.Duration, logger *zap.SugaredLogger) (*ManagedConnection, error) {
+	c := NewDurableConnection(target, nil, logger)
+
+	select {
+	case <-c.establishChan:
+		return c, nil
+	case <-time.After(duration):
+		c.Shutdown()
+		return nil, ErrConnectionNotEstablished
+	}
+}
+
 // NewDurableConnection creates a new websocket connection, that
 // passes incoming messages to the given message channel. It can also
 // send messages to the endpoint it connects to.
@@ -111,9 +135,15 @@ func NewDurableConnection(target string, messageChan chan []byte, logger *zap.Su
 			// by restarting the serving side of the connection behind a Kubernetes Service.
 			HandshakeTimeout: 3 * time.Second,
 		}
-		conn, _, err := dialer.Dial(target, nil)
+		conn, resp, err := dialer.Dial(target, nil)
 		if err != nil {
-			logger.Errorw("Websocket connection could not be established", zap.Error(err))
+			if resp != nil {
+				dresp, _ := httputil.DumpResponse(resp, true /*body*/) // This is for logging so don't care if it fails.
+				logger.Errorw("Websocket connection could not be established", zap.Error(err),
+					zap.String("request", string(dresp)))
+			} else {
+				logger.Errorw("Websocket connection could not be established", zap.Error(err))
+			}
 		}
 		return conn, err
 	}
@@ -136,7 +166,7 @@ func NewDurableConnection(target string, messageChan chan []byte, logger *zap.Su
 				}
 				logger.Debug("Connected to ", target)
 				if err := c.keepalive(); err != nil {
-					logger.With(zap.Error(err)).Errorf("Connection to %s broke down, reconnecting...", target)
+					logger.Errorw(fmt.Sprintf("Connection to %s broke down, reconnecting...", target), zap.Error(err))
 				}
 				if err := c.closeConnection(); err != nil {
 					logger.Errorw("Failed to close the connection after crashing", zap.Error(err))
@@ -175,6 +205,7 @@ func newConnection(connFactory func() (rawConnection, error), messageChan chan [
 	conn := &ManagedConnection{
 		connectionFactory: connFactory,
 		closeChan:         make(chan struct{}),
+		establishChan:     make(chan struct{}),
 		messageChan:       messageChan,
 		connectionBackoff: wait.Backoff{
 			Duration: 100 * time.Millisecond,
@@ -211,6 +242,9 @@ func (c *ManagedConnection) connect() error {
 			defer c.connectionLock.Unlock()
 
 			c.connection = conn
+			c.establishOnce.Do(func() {
+				close(c.establishChan)
+			})
 			return true, nil
 		case <-c.closeChan:
 			return false, errShuttingDown
@@ -326,12 +360,4 @@ func (c *ManagedConnection) Shutdown() error {
 	err := c.closeConnection()
 	c.processingWg.Wait()
 	return err
-}
-
-// IsEstablished returns true the websocket connection has been established.
-func (c *ManagedConnection) IsEstablished() bool {
-	c.connectionLock.RLock()
-	defer c.connectionLock.RUnlock()
-
-	return c.connection != nil
 }

@@ -19,8 +19,16 @@ function install_istio() {
     readonly ISTIO_VERSION="stable"
   fi
 
-  # TODO: Figure out the commit of net-istio.yaml from net-istio.yaml
-  local NET_ISTIO_COMMIT=f64ed34d3776a444372483dddc15a330c6c1ac53
+  if [[ -z "${NET_ISTIO_COMMIT}" ]]; then
+    NET_ISTIO_COMMIT=$(head -n 1 ${1} | grep "# Generated when HEAD was" | sed 's/^.* //')
+    echo "Got NET_ISTIO_COMMIT from ${1}: ${NET_ISTIO_COMMIT}"
+  fi
+
+  # TODO: remove this when all the net-istio.yaml in use contain a commit ID
+  if [[ -z "${NET_ISTIO_COMMIT}" ]]; then
+    NET_ISTIO_COMMIT="8102cd3d32f05be1c58260a9717d532a4a6d2f60"
+    echo "Hard coded NET_ISTIO_COMMIT: ${NET_ISTIO_COMMIT}"
+  fi
 
   # And checkout the setup script based on that commit.
   local NET_ISTIO_DIR=$(mktemp -d)
@@ -32,10 +40,20 @@ function install_istio() {
       && git checkout FETCH_HEAD
   )
 
-  if (( MESH )); then
-    ISTIO_PROFILE="istio-ci-mesh.yaml"
+  ISTIO_PROFILE="istio"
+  if [[ -n "$KIND" ]]; then
+    ISTIO_PROFILE+="-kind"
   else
-    ISTIO_PROFILE="istio-ci-no-mesh.yaml"
+    ISTIO_PROFILE+="-ci"
+  fi
+  if [[ $MESH -eq 0 ]]; then
+    ISTIO_PROFILE+="-no"
+  fi
+  ISTIO_PROFILE+="-mesh"
+  ISTIO_PROFILE+=".yaml"
+
+  if [[ -n "$CLUSTER_DOMAIN" ]]; then
+    sed -ie "s/cluster\.local/${CLUSTER_DOMAIN}/g" ${NET_ISTIO_DIR}/third_party/istio-${ISTIO_VERSION}/${ISTIO_PROFILE}
   fi
 
   echo ">> Installing Istio"
@@ -48,7 +66,7 @@ function install_istio() {
     echo "net-istio original YAML: ${1}"
     # Create temp copy in which we replace knative-serving by the test's system namespace.
     local YAML_NAME=$(mktemp -p $TMP_DIR --suffix=.$(basename "$1"))
-    sed "s/namespace: ${KNATIVE_DEFAULT_NAMESPACE}/namespace: ${SYSTEM_NAMESPACE}/g" ${1} > ${YAML_NAME}
+    sed "s/namespace: \"*${KNATIVE_DEFAULT_NAMESPACE}\"*/namespace: ${SYSTEM_NAMESPACE}/g" ${1} > ${YAML_NAME}
     echo "net-istio patched YAML: $YAML_NAME"
     ko apply -f "${YAML_NAME}" --selector=networking.knative.dev/ingress-provider=istio || return 1
     UNINSTALL_LIST+=( "${YAML_NAME}" )
@@ -145,7 +163,7 @@ function install_contour() {
 function wait_until_ingress_running() {
   if [[ -n "${ISTIO_VERSION}" ]]; then
     wait_until_pods_running istio-system || return 1
-    wait_until_service_has_external_http_address istio-system istio-ingressgateway
+    wait_until_service_has_external_http_address istio-system istio-ingressgateway || return 1
   fi
   if [[ -n "${GLOO_VERSION}" ]]; then
     # we must set these override values to allow the test spoofing client to work with Gloo

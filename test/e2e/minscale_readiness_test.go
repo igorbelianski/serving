@@ -20,6 +20,7 @@ package e2e
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"testing"
@@ -60,10 +61,12 @@ func TestMinScale(t *testing.T) {
 
 	t.Log("Creating configuration")
 	cfg, err := v1test.CreateConfiguration(t, clients, names, withMinScale(minScale),
+		// Make sure we scale down quickly after panic, before the autoscaler get killed by chaosduck.
+		withWindow(autoscaling.WindowMin),
 		// Pass low resource requirements to avoid Pod scheduling problems
 		// on busy clusters.  This is adapted from ./test/e2e/scale.go
-		func(svc *v1.Configuration) {
-			svc.Spec.Template.Spec.Containers[0].Resources = corev1.ResourceRequirements{
+		func(cfg *v1.Configuration) {
+			cfg.Spec.Template.Spec.Containers[0].Resources = corev1.ResourceRequirements{
 				Limits: corev1.ResourceList{
 					corev1.ResourceCPU:    resource.MustParse("50m"),
 					corev1.ResourceMemory: resource.MustParse("50Mi"),
@@ -160,6 +163,15 @@ func withMinScale(minScale int) func(cfg *v1.Configuration) {
 	}
 }
 
+func withWindow(t time.Duration) func(cfg *v1.Configuration) {
+	return func(cfg *v1.Configuration) {
+		if cfg.Spec.Template.Annotations == nil {
+			cfg.Spec.Template.Annotations = make(map[string]string, 1)
+		}
+		cfg.Spec.Template.Annotations[autoscaling.WindowAnnotationKey] = t.String()
+	}
+}
+
 func latestRevisionName(t *testing.T, clients *test.Clients, configName, oldRevName string) string {
 	// Wait for the Config have a LatestCreatedRevisionName
 	if err := v1test.WaitForConfigurationState(
@@ -199,9 +211,10 @@ func privateServiceName(t *testing.T, clients *test.Clients, revisionName string
 // waitForDesiredScale returns the last observed number of pods and/or error if the cond
 // callback is never satisfied.
 func waitForDesiredScale(clients *test.Clients, serviceName string, cond func(int) bool) (latestReady int, err error) {
-	endpoints := clients.KubeClient.Kube.CoreV1().Endpoints(test.ServingNamespace)
+	endpoints := clients.KubeClient.CoreV1().Endpoints(test.ServingNamespace)
 
-	return latestReady, wait.PollImmediate(250*time.Millisecond, time.Minute, func() (bool, error) {
+	// See https://github.com/knative/serving/issues/7727#issuecomment-706772507 for context.
+	return latestReady, wait.PollImmediate(250*time.Millisecond, 3*time.Minute, func() (bool, error) {
 		endpoint, err := endpoints.Get(context.Background(), serviceName, metav1.GetOptions{})
 		if err != nil {
 			return false, nil
@@ -212,7 +225,7 @@ func waitForDesiredScale(clients *test.Clients, serviceName string, cond func(in
 }
 
 func ensureDesiredScale(clients *test.Clients, t *testing.T, serviceName string, cond func(int) bool) (latestReady int, observed bool) {
-	endpoints := clients.KubeClient.Kube.CoreV1().Endpoints(test.ServingNamespace)
+	endpoints := clients.KubeClient.CoreV1().Endpoints(test.ServingNamespace)
 
 	err := wait.PollImmediate(250*time.Millisecond, 10*time.Second, func() (bool, error) {
 		endpoint, err := endpoints.Get(context.Background(), serviceName, metav1.GetOptions{})
@@ -226,9 +239,9 @@ func ensureDesiredScale(clients *test.Clients, t *testing.T, serviceName string,
 
 		return false, nil
 	})
-	if err != wait.ErrWaitTimeout {
+	if !errors.Is(err, wait.ErrWaitTimeout) {
 		t.Log("PollError =", err)
 	}
 
-	return latestReady, err == wait.ErrWaitTimeout
+	return latestReady, errors.Is(err, wait.ErrWaitTimeout)
 }

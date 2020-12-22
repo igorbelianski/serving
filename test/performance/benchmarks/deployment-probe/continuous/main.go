@@ -25,8 +25,8 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/ghodss/yaml"
 	"github.com/google/mako/go/quickstore"
+	"sigs.k8s.io/yaml"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -95,7 +95,7 @@ func handle(q *quickstore.Quickstore, svc kmeta.Accessor, status duckv1.Status,
 		q.AddSamplePoint(mako.XTime(created), map[string]float64{
 			metric: elapsed.Seconds(),
 		})
-		log.Printf("Ready: %s", svc.GetName())
+		log.Print("Ready: ", svc.GetName())
 	} else if cc.Status == corev1.ConditionFalse {
 		q.AddError(mako.XTime(created), cc.Message)
 		log.Printf("Not Ready: %s; %s: %s", svc.GetName(), cc.Reason, cc.Message)

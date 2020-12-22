@@ -1,5 +1,5 @@
 /*
-Copyright 2019 The Knative Authors.
+Copyright 2019 The Knative Authors
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -64,7 +64,7 @@ type Collector interface {
 	// Record allows stats to be captured that came from outside the Collector.
 	Record(key types.NamespacedName, now time.Time, stat Stat)
 	// Delete deletes a Metric and halts collection.
-	Delete(string, string) error
+	Delete(string, string)
 	// Watch registers a singleton function to call when a specific collector's status changes.
 	// The passed name is the namespace/name of the metric owned by the respective collector.
 	Watch(func(types.NamespacedName))
@@ -111,7 +111,11 @@ func NewMetricCollector(statsScraperFactory StatsScraperFactory, logger *zap.Sug
 // CreateOrUpdate either creates a collection for the given metric or update it, should
 // it already exist.
 func (c *MetricCollector) CreateOrUpdate(metric *av1alpha1.Metric) error {
-	scraper, err := c.statsScraperFactory(metric, c.logger)
+	logger := c.logger.With(zap.String(logkey.Key, types.NamespacedName{
+		Namespace: metric.Namespace,
+		Name:      metric.Name,
+	}.String()))
+	scraper, err := c.statsScraperFactory(metric, logger)
 	if err != nil {
 		return err
 	}
@@ -127,12 +131,12 @@ func (c *MetricCollector) CreateOrUpdate(metric *av1alpha1.Metric) error {
 		return collection.lastError()
 	}
 
-	c.collections[key] = newCollection(metric, scraper, c.clock, c.Inform, c.logger)
+	c.collections[key] = newCollection(metric, scraper, c.clock, c.Inform, logger)
 	return nil
 }
 
 // Delete deletes a Metric and halts collection.
-func (c *MetricCollector) Delete(namespace, name string) error {
+func (c *MetricCollector) Delete(namespace, name string) {
 	c.collectionsMutex.Lock()
 	defer c.collectionsMutex.Unlock()
 
@@ -141,7 +145,6 @@ func (c *MetricCollector) Delete(namespace, name string) error {
 		collection.close()
 		delete(c.collections, key)
 	}
-	return nil
 }
 
 // Record records a stat that's been generated outside of the metric collector.
@@ -336,7 +339,7 @@ func (c *collection) updateLastError(err error) bool {
 	c.mux.Lock()
 	defer c.mux.Unlock()
 
-	if c.lastErr == err {
+	if errors.Is(err, c.lastErr) {
 		return false
 	}
 	c.lastErr = err
@@ -354,9 +357,9 @@ func (c *collection) lastError() error {
 func (c *collection) record(now time.Time, stat Stat) {
 	// Proxied requests have been counted at the activator. Subtract
 	// them to avoid double counting.
-	concurr := stat.AverageConcurrentRequests - stat.AverageProxiedConcurrentRequests
-	c.concurrencyBuckets.Record(now, concurr)
-	c.concurrencyPanicBuckets.Record(now, concurr)
+	concur := stat.AverageConcurrentRequests - stat.AverageProxiedConcurrentRequests
+	c.concurrencyBuckets.Record(now, concur)
+	c.concurrencyPanicBuckets.Record(now, concur)
 	rps := stat.RequestCount - stat.ProxiedRequestCount
 	c.rpsBuckets.Record(now, rps)
 	c.rpsPanicBuckets.Record(now, rps)

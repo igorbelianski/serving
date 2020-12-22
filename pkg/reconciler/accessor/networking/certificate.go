@@ -5,7 +5,7 @@ Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 You may obtain a copy of the License at
 
-	https://www.apache.org/licenses/LICENSE-2.0
+    http://www.apache.org/licenses/LICENSE-2.0
 
 Unless required by applicable law or agreed to in writing, software
 distributed under the License is distributed on an "AS IS" BASIS,
@@ -44,7 +44,7 @@ func ReconcileCertificate(ctx context.Context, owner kmeta.Accessor, desired *v1
 
 	recorder := controller.GetEventRecorder(ctx)
 	if recorder == nil {
-		return nil, fmt.Errorf("recoder for reconciling Certificate %s/%s is not created", desired.Namespace, desired.Name)
+		return nil, fmt.Errorf("recorder for reconciling Certificate %s/%s is not created", desired.Namespace, desired.Name)
 	}
 	cert, err := certAccessor.GetCertificateLister().Certificates(desired.Namespace).Get(desired.Name)
 	if apierrs.IsNotFound(err) {

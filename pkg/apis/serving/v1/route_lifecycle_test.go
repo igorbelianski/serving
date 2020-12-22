@@ -13,6 +13,7 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
+
 package v1
 
 import (
@@ -162,8 +163,15 @@ func TestRouteIsReady(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if e, a := tc.isReady, tc.status.IsReady(); e != a {
+			r := Route{Status: tc.status}
+			if e, a := tc.isReady, r.IsReady(); e != a {
 				t.Errorf("%q expected: %v got: %v", tc.name, e, a)
+			}
+
+			r.Generation = 1
+			r.Status.ObservedGeneration = 2
+			if r.IsReady() {
+				t.Error("Expected IsReady() to be false when Generation != ObservedGeneration")
 			}
 		})
 	}
@@ -468,6 +476,14 @@ func TestIngressNotConfigured(t *testing.T) {
 	r := &RouteStatus{}
 	r.InitializeConditions()
 	r.MarkIngressNotConfigured()
+
+	apistest.CheckConditionOngoing(r, RouteConditionIngressReady, t)
+}
+
+func TestMarkInRollout(t *testing.T) {
+	r := &RouteStatus{}
+	r.InitializeConditions()
+	r.MarkIngressRolloutInProgress()
 
 	apistest.CheckConditionOngoing(r, RouteConditionIngressReady, t)
 }

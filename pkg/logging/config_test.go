@@ -1,5 +1,5 @@
 /*
-Copyright 2018 The Knative Authors.
+Copyright 2018 The Knative Authors
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -34,25 +34,23 @@ func TestNewConfigNoEntry(t *testing.T) {
 	configMap := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: "knative-something",
-			Name:      "config-logging",
+			Name:      logging.ConfigMapName(),
 		},
 	}
 	cm, err := logging.NewConfigFromConfigMap(configMap)
 	if err != nil {
-		t.Errorf("Expected no errors. got: %v", err)
+		t.Error("Expected no errors. got:", err)
 	}
 
 	c, err := logging.NewConfigFromMap(configMap.Data)
 	if err != nil {
-		t.Errorf("Expected no errors. got: %v", err)
+		t.Error("Expected no errors. got:", err)
 	}
 
 	if diff := cmp.Diff(cm, c); diff != "" {
 		t.Fatalf("Config mismatch: diff(-want,+got):\n%s", diff)
 	}
-	if got := c.LoggingConfig; got == "" {
-		t.Error("LoggingConfig = empty, want not empty")
-	}
+	// TODO: assert that c.LoggingConfig is empty.
 	if got, want := len(c.LoggingLevel), 0; got != want {
 		t.Errorf("len(LoggingLevel) = %d, want %d", got, want)
 	}
@@ -69,7 +67,7 @@ func TestNewConfig(t *testing.T) {
 	configMap := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: system.Namespace(),
-			Name:      "config-logging",
+			Name:      logging.ConfigMapName(),
 		},
 		Data: map[string]string{
 			"zap-logger-config":   wantCfg,
@@ -79,11 +77,11 @@ func TestNewConfig(t *testing.T) {
 
 	cm, err := logging.NewConfigFromConfigMap(configMap)
 	if err != nil {
-		t.Errorf("Expected no errors. got: %v", err)
+		t.Error("Expected no errors. got:", err)
 	}
 	c, err := logging.NewConfigFromMap(configMap.Data)
 	if err != nil {
-		t.Errorf("Expected no errors. got: %v", err)
+		t.Error("Expected no errors. got:", err)
 	}
 	if diff := cmp.Diff(cm, c); diff != "" {
 		t.Errorf("Config mismatch: diff(-want,+got):\n%s", diff)
@@ -100,13 +98,13 @@ func TestOurConfig(t *testing.T) {
 	cm, example := ConfigMapsFromTestFile(t, logging.ConfigMapName())
 
 	if cfg, err := logging.NewConfigFromConfigMap(cm); err != nil {
-		t.Errorf("Expected no errors. got: %v", err)
+		t.Error("Expected no errors. got:", err)
 	} else if cfg == nil {
 		t.Errorf("NewConfigFromConfigMap(actual) = %v, want non-nil", cfg)
 	}
 
 	if cfg, err := logging.NewConfigFromConfigMap(example); err != nil {
-		t.Errorf("Expected no errors. got: %v", err)
+		t.Error("Expected no errors. got:", err)
 	} else if cfg == nil {
 		t.Errorf("NewConfigFromConfigMap(example) = %v, want non-nil", cfg)
 	}
@@ -116,7 +114,7 @@ func TestNewLoggerFromConfig(t *testing.T) {
 	c, _, _ := getTestConfig(t)
 	_, atomicLevel := logging.NewLoggerFromConfig(c, "queueproxy")
 	if atomicLevel.Level() != zapcore.DebugLevel {
-		t.Errorf("logger level wanted: DebugLevel, got: %v", atomicLevel)
+		t.Error("logger level wanted: DebugLevel, got:", atomicLevel)
 	}
 }
 
@@ -124,7 +122,7 @@ func TestEmptyLevel(t *testing.T) {
 	configMap := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: system.Namespace(),
-			Name:      "config-logging",
+			Name:      logging.ConfigMapName(),
 		},
 		Data: map[string]string{
 			"zap-logger-config":   "{\"level\": \"error\",\n\"outputPaths\": [\"stdout\"],\n\"errorOutputPaths\": [\"stderr\"],\n\"encoding\": \"json\"}",
@@ -133,12 +131,12 @@ func TestEmptyLevel(t *testing.T) {
 	}
 	cm, err := logging.NewConfigFromConfigMap(configMap)
 	if err != nil {
-		t.Errorf("Expected no errors, got: %v", err)
+		t.Error("Expected no errors, got:", err)
 	}
 
 	c, err := logging.NewConfigFromMap(configMap.Data)
 	if err != nil {
-		t.Errorf("Expected no errors, got: %v", err)
+		t.Error("Expected no errors, got:", err)
 	}
 
 	if diff := cmp.Diff(cm, c); diff != "" {
@@ -155,7 +153,7 @@ func TestInvalidLevel(t *testing.T) {
 	configMap := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: system.Namespace(),
-			Name:      "config-logging",
+			Name:      logging.ConfigMapName(),
 		},
 		Data: map[string]string{
 			"zap-logger-config":   wantCfg,
@@ -183,7 +181,7 @@ func getTestConfig(t *testing.T) (*logging.Config, string, string) {
 	configMap := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: system.Namespace(),
-			Name:      "config-logging",
+			Name:      logging.ConfigMapName(),
 		},
 		Data: map[string]string{
 			"zap-logger-config":   wantCfg,
@@ -192,11 +190,11 @@ func getTestConfig(t *testing.T) (*logging.Config, string, string) {
 	}
 	cm, err := logging.NewConfigFromConfigMap(configMap)
 	if err != nil {
-		t.Errorf("err: %s", err)
+		t.Error("err:", err)
 	}
 	c, err := logging.NewConfigFromMap(configMap.Data)
 	if err != nil {
-		t.Errorf("err: %s", err)
+		t.Error("err:", err)
 	}
 	if diff := cmp.Diff(cm, c); diff != "" {
 		t.Errorf("Config mismatch: diff(-want,+got):\n%s", diff)
@@ -214,7 +212,7 @@ func TestUpdateLevelFromConfigMap(t *testing.T) {
 	cm := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: system.Namespace(),
-			Name:      "config-logging",
+			Name:      logging.ConfigMapName(),
 		},
 		Data: map[string]string{
 			"zap-logger-config":   "",

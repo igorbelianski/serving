@@ -1,5 +1,5 @@
 /*
-Copyright 2019 The Knative Authors.
+Copyright 2019 The Knative Authors
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -73,6 +73,7 @@ const (
 	ConfigurationConditionReady = apis.ConditionReady
 )
 
+// IsConfigurationCondition returns true if the given ConditionType is a ConfigurationCondition.
 func IsConfigurationCondition(t apis.ConditionType) bool {
 	return t == ConfigurationConditionReady
 }

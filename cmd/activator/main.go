@@ -30,17 +30,15 @@ import (
 	"github.com/kelseyhightower/envconfig"
 	"go.uber.org/zap"
 
-	gorillawebsocket "github.com/gorilla/websocket"
-
 	// Injection related imports.
 	kubeclient "knative.dev/pkg/client/injection/kube/client"
 	"knative.dev/pkg/injection"
+	"knative.dev/serving/pkg/activator"
 	revisioninformer "knative.dev/serving/pkg/client/injection/informers/serving/v1/revision"
 
 	"k8s.io/apimachinery/pkg/util/wait"
 
 	network "knative.dev/networking/pkg"
-	"knative.dev/networking/pkg/apis/networking"
 	"knative.dev/pkg/configmap"
 	"knative.dev/pkg/controller"
 	"knative.dev/pkg/injection/sharedmain"
@@ -61,6 +59,7 @@ import (
 	asmetrics "knative.dev/serving/pkg/autoscaler/metrics"
 	pkghttp "knative.dev/serving/pkg/http"
 	"knative.dev/serving/pkg/logging"
+	"knative.dev/serving/pkg/networking"
 )
 
 const (
@@ -69,24 +68,6 @@ const (
 	// The port on which autoscaler WebSocket server listens.
 	autoscalerPort = ":8080"
 )
-
-func statReporter(statSink *websocket.ManagedConnection, statChan <-chan []asmetrics.StatMessage,
-	logger *zap.SugaredLogger) {
-	for sms := range statChan {
-		go func(sms []asmetrics.StatMessage) {
-			wsms := asmetrics.ToWireStatMessages(sms)
-			b, err := wsms.Marshal()
-			if err != nil {
-				logger.Errorw("Error while marshaling stats", zap.Error(err))
-				return
-			}
-
-			if err := statSink.SendRaw(gorillawebsocket.BinaryMessage, b); err != nil {
-				logger.Errorw("Error while sending stats", zap.Error(err))
-			}
-		}(sms)
-	}
-}
 
 type config struct {
 	PodName string `split_words:"true" required:"true"`
@@ -104,9 +85,9 @@ func main() {
 	defer cancel()
 
 	// Report stats on Go memory usage every 30 seconds.
-	sharedmain.MemStatsOrDie(ctx)
+	metrics.MemStatsOrDie(ctx)
 
-	cfg := sharedmain.ParseAndGetConfigOrDie()
+	cfg := injection.ParseAndGetRESTConfigOrDie()
 
 	log.Printf("Registering %d clients", len(injection.Default.GetClients()))
 	log.Printf("Registering %d informer factories", len(injection.Default.GetInformerFactories()))
@@ -151,12 +132,17 @@ func main() {
 
 	logger.Info("Starting the knative activator")
 
-	statCh := make(chan []asmetrics.StatMessage)
-	defer close(statCh)
+	// Create the transport used by both the activator->QP probe and the proxy.
+	// It's important that the throttler and the activatorhandler share this
+	// transport so that throttler probe connections can be reused after probing
+	// (via keep-alive) to send real requests, avoiding needing an extra
+	// reconnect for the first request after the probe succeeds.
+	logger.Debugf("MaxIdleProxyConns: %d, MaxIdleProxyConnsPerHost: %d", env.MaxIdleProxyConns, env.MaxIdleProxyConnsPerHost)
+	transport := pkgnet.NewAutoTransport(env.MaxIdleProxyConns, env.MaxIdleProxyConnsPerHost)
 
 	// Start throttler.
 	throttler := activatornet.NewThrottler(ctx, env.PodIP)
-	go throttler.Run(ctx)
+	go throttler.Run(ctx, transport)
 
 	oct := tracing.NewOpenCensusTracer(tracing.WithExporterFull(networking.ActivatorServiceName, env.PodIP, logger))
 
@@ -173,23 +159,23 @@ func main() {
 	configStore := activatorconfig.NewStore(logger, tracerUpdater)
 	configStore.WatchConfigs(configMapWatcher)
 
+	statCh := make(chan []asmetrics.StatMessage)
+	defer close(statCh)
+
 	// Open a WebSocket connection to the autoscaler.
 	autoscalerEndpoint := fmt.Sprintf("ws://%s.%s.svc.%s%s", "autoscaler", system.Namespace(), pkgnet.GetClusterDomainName(), autoscalerPort)
 	logger.Info("Connecting to Autoscaler at ", autoscalerEndpoint)
 	statSink := websocket.NewDurableSendingConnection(autoscalerEndpoint, logger)
 	defer statSink.Shutdown()
-	go statReporter(statSink, statCh, logger)
+	go activator.ReportStats(logger, statSink, statCh)
 
 	// Create and run our concurrency reporter
 	concurrencyReporter := activatorhandler.NewConcurrencyReporter(ctx, env.PodName, statCh)
 	go concurrencyReporter.Run(ctx.Done())
 
-	logger.Debugf("MaxIdleProxyConns: %d, MaxIdleProxyConnsPerHost: %d", env.MaxIdleProxyConns, env.MaxIdleProxyConnsPerHost)
-	proxyTransport := pkgnet.NewAutoTransport(env.MaxIdleProxyConns, env.MaxIdleProxyConnsPerHost)
-
 	// Create activation handler chain
 	// Note: innermost handlers are specified first, ie. the last handler in the chain will be executed first
-	var ah http.Handler = activatorhandler.New(ctx, throttler, proxyTransport)
+	var ah http.Handler = activatorhandler.New(ctx, throttler, transport)
 	ah = concurrencyReporter.Handler(ah)
 	ah = tracing.HTTPSpanMiddleware(ah)
 	ah = configStore.HTTPMiddleware(ah)
@@ -238,7 +224,7 @@ func main() {
 	for name, server := range servers {
 		go func(name string, s *http.Server) {
 			// Don't forward ErrServerClosed as that indicates we're already shutting down.
-			if err := s.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			if err := s.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 				errCh <- fmt.Errorf("%s server failed: %w", name, err)
 			}
 		}(name, server)

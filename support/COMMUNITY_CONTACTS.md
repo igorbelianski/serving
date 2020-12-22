@@ -34,8 +34,11 @@ community contact's duty (subject to change) is as followed:
 - Check the
   [knative-users@](https://groups.google.com/forum/#!forum/knative-users)
   mailing list and `@serving-help` on Slack for unanswered questions.
-- Check
+- Check Serving
   [unassigned issues / untriaged issues](https://github.com/knative/serving/issues?q=is%3Aopen+is%3Aissue+no%3Aassignee+no%3Amilestone)
+  for unanswered questions.
+- Check Docs
+  [unassigned issues / untriaged issues](https://github.com/knative/docs/issues?q=is%3Aopen+is%3Aissue+no%3Aassignee+no%3Amilestone)
   for unanswered questions.
 
 ## SLO
@@ -65,19 +68,19 @@ rotation, feel free to send a PR to remove yourself.
 
 | week       | contact                                             |
 | ---------- | --------------------------------------------------- |
-| 2020-09-14 | [julz](https://github.com/julz)                     |
-| 2020-09-21 | [JRBANCEL](https://github.com/JRBANCEL)             |
-| 2020-09-28 | [nak3](https://github.com/nak3)                     |
-| 2020-10-05 | [dprotaso](https://github.com/dprotaso)             |
-| 2020-10-12 | [tcnghia](https://github.com/tcnghia)               |
-| 2020-10-19 | [vagababov](https://github.com/vagababov)           |
-| 2020-10-26 | [mattmoor](https://github.com/mattmoor)             |
-| 2020-11-02 | [ZhiminXiang](https://github.com/ZhiminXiang)       |
-| 2020-11-09 | [yanweiguo](https://github.com/yanweiguo)           |
-| 2020-11-16 | [markusthoemmes](https://github.com/markusthoemmes) |
-| 2020-11-23 | [julz](https://github.com/julz)                     |
-| 2020-11-30 | [JRBANCEL](https://github.com/JRBANCEL)             |
-| 2020-12-07 | [nak3](https://github.com/nak3)                     |
 | 2020-12-14 | [tcnghia](https://github.com/tcnghia)               |
-| 2020-12-21 | [dprotaso](https://github.com/dprotaso)             |
+| 2020-12-21 | [nak3](https://github.com/nak3)                     |
 | 2020-12-28 | [vagababov](https://github.com/vagababov)           |
+| 2021-01-04 | [mattmoor](https://github.com/mattmoor)             |
+| 2020-01-11 | [yanweiguo](https://github.com/yanweiguo)           |
+| 2020-01-18 | [markusthoemmes](https://github.com/markusthoemmes) |
+| 2020-01-25 | [julz](https://github.com/julz)                     |
+| 2020-02-01 | [ZhiminXiang](https://github.com/ZhiminXiang)       |
+| 2020-02-08 | [JRBANCEL](https://github.com/JRBANCEL)             |
+| 2020-02-15 | [nak3](https://github.com/nak3)                     |
+| 2020-02-22 | [vagababov](https://github.com/vagababov)           |
+| 2020-03-01 | [tcnghia](https://github.com/tcnghia)               |
+| 2020-03-08 | [dprotaso](https://github.com/dprotaso)             |
+| 2020-03-15 | [mattmoor](https://github.com/mattmoor)             |
+| 2020-03-22 | [ZhiminXiang](https://github.com/ZhiminXiang)       |
+| 2020-03-29 | [yanweiguo](https://github.com/yanweiguo)           |

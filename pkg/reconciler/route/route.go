@@ -18,9 +18,11 @@ package route
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	kubelabels "k8s.io/apimachinery/pkg/labels"
@@ -40,7 +42,6 @@ import (
 	pkgreconciler "knative.dev/pkg/reconciler"
 	"knative.dev/pkg/system"
 	"knative.dev/pkg/tracker"
-	cfgmap "knative.dev/serving/pkg/apis/config"
 	v1 "knative.dev/serving/pkg/apis/serving/v1"
 	clientset "knative.dev/serving/pkg/client/clientset/versioned"
 	routereconciler "knative.dev/serving/pkg/client/injection/reconciler/serving/v1/route"
@@ -70,7 +71,8 @@ type Reconciler struct {
 	certificateLister   networkinglisters.CertificateLister
 	tracker             tracker.Interface
 
-	clock system.Clock
+	clock        system.Clock
+	enqueueAfter func(interface{}, time.Duration)
 }
 
 // Check that our Reconciler implements routereconciler.Interface
@@ -101,9 +103,10 @@ func (c *Reconciler) getServices(route *v1.Route) ([]*corev1.Service, error) {
 		serviceCopy[i] = svc.DeepCopy()
 	}
 
-	return serviceCopy, err
+	return serviceCopy, nil
 }
 
+// ReconcileKind implements Interface.ReconcileKind.
 func (c *Reconciler) ReconcileKind(ctx context.Context, r *v1.Route) pkgreconciler.Event {
 	logger := logging.FromContext(ctx)
 	logger.Debugf("Reconciling route: %#v", r.Spec)
@@ -125,14 +128,6 @@ func (c *Reconciler) ReconcileKind(ctx context.Context, r *v1.Route) pkgreconcil
 		return err
 	}
 
-	if cfgmap.FromContextOrDefaults(ctx).Features.ResponsiveRevisionGC != cfgmap.Enabled {
-		// In all cases we will add annotations to the referred targets.  This is so that when they become
-		// routable we can know (through a listener) and attempt traffic configuration again.
-		if err := c.reconcileTargetRevisions(ctx, traffic, r); err != nil {
-			return err
-		}
-	}
-
 	r.Status.Address = &duckv1.Addressable{
 		URL: &apis.URL{
 			Scheme: "http",
@@ -152,14 +147,18 @@ func (c *Reconciler) ReconcileKind(ctx context.Context, r *v1.Route) pkgreconcil
 	}
 
 	// Reconcile ingress and its children resources.
-	ingress, err := c.reconcileIngressResources(ctx, r, traffic, tls, ingressClassForRoute(ctx, r), acmeChallenges...)
-
+	ingress, effectiveRO, err := c.reconcileIngress(ctx, r, traffic, tls, ingressClassForRoute(ctx, r), acmeChallenges...)
 	if err != nil {
 		return err
 	}
 
+	roInProgress := !effectiveRO.Done()
 	if ingress.GetObjectMeta().GetGeneration() != ingress.Status.ObservedGeneration {
 		r.Status.MarkIngressNotConfigured()
+	} else if roInProgress {
+		logger.Info("Rollout is in progress")
+		// Rollout in progress, so mark the status as such.
+		r.Status.MarkIngressRolloutInProgress()
 	} else {
 		r.Status.PropagateIngressStatus(ingress.Status)
 	}
@@ -169,24 +168,22 @@ func (c *Reconciler) ReconcileKind(ctx context.Context, r *v1.Route) pkgreconcil
 		return err
 	}
 
+	// We do it here, rather than in the similar check above,
+	// since we might be inside a rollout and Ingress
+	// is not yet ready and that takes priority, so the `roInProgress` branch
+	// wil not be triggered.
+	if roInProgress {
+		// Update the route.Status.Traffic to contain correct traffic
+		// distribution based on rollout status.
+		r.Status.Traffic, err = traffic.GetRevisionTrafficTargets(ctx, r, effectiveRO)
+		if err != nil {
+			return err
+		}
+		return nil
+	}
+
 	logger.Info("Route successfully synced")
 	return nil
-}
-
-func (c *Reconciler) reconcileIngressResources(ctx context.Context, r *v1.Route, tc *traffic.Config, tls []netv1alpha1.IngressTLS,
-	ingressClass string, acmeChallenges ...netv1alpha1.HTTP01Challenge) (*netv1alpha1.Ingress, error) {
-
-	desired, err := resources.MakeIngress(ctx, r, tc, tls, ingressClass, acmeChallenges...)
-	if err != nil {
-		return nil, err
-	}
-
-	ingress, err := c.reconcileIngress(ctx, r, desired)
-	if err != nil {
-		return nil, err
-	}
-
-	return ingress, nil
 }
 
 func (c *Reconciler) tls(ctx context.Context, host string, r *v1.Route, traffic *traffic.Config) ([]netv1alpha1.IngressTLS, []netv1alpha1.HTTP01Challenge, error) {
@@ -324,7 +321,8 @@ func (c *Reconciler) configureTraffic(ctx context.Context, r *v1.Route) (*traffi
 		}
 	}
 
-	badTarget, isTargetError := trafficErr.(traffic.TargetError)
+	var badTarget traffic.TargetError
+	isTargetError := errors.As(trafficErr, &badTarget)
 	if trafficErr != nil && !isTargetError {
 		// An error that's not due to missing traffic target should
 		// make us fail fast.
@@ -341,8 +339,8 @@ func (c *Reconciler) configureTraffic(ctx context.Context, r *v1.Route) (*traffi
 
 	logger.Info("All referred targets are routable, marking AllTrafficAssigned with traffic information.")
 
-	// Domain should already be present
-	r.Status.Traffic, err = t.GetRevisionTrafficTargets(ctx, r)
+	// Pass empty rollout here. We'll recompute this if there is a rollout in progress.
+	r.Status.Traffic, err = t.GetRevisionTrafficTargets(ctx, r, &traffic.Rollout{})
 	if err != nil {
 		return nil, err
 	}
@@ -436,7 +434,7 @@ func autoTLSEnabled(ctx context.Context, r *v1.Route) bool {
 	annotationValue := r.Annotations[networking.DisableAutoTLSAnnotationKey]
 
 	disabledByAnnotation, err := strconv.ParseBool(annotationValue)
-	if err != nil {
+	if annotationValue != "" && err != nil {
 		// validation should've caught an invalid value here.
 		// if we have one anyways, assume not disabled and log a warning.
 		logger.Warnf("Invalid annotation value for %q. Value: %q",

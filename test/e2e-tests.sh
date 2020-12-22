@@ -45,25 +45,21 @@ header "Running tests"
 
 failed=0
 
-# Run tests serially in the mesh and https scenarios
+# Run tests serially in the mesh and https scenarios.
 parallelism=""
 use_https=""
 if (( MESH )); then
   parallelism="-parallel 1"
-  # This is a workaround until Istio fixes https://github.com/istio/istio/issues/23485.
-  kubectl patch mutatingwebhookconfigurations istio-sidecar-injector -p '{"webhooks": [{"name": "sidecar-injector.istio.io", "sideEffects": "None"}]}'
 fi
 
 if (( HTTPS )); then
   use_https="--https"
-  # TODO: parallel 1 is necessary until https://github.com/knative/serving/issues/7406 is solved.
-  parallelism="-parallel 1"
   toggle_feature autoTLS Enabled config-network
   kubectl apply -f ${TMP_DIR}/test/config/autotls/certmanager/caissuer/
   add_trap "kubectl delete -f ${TMP_DIR}/test/config/autotls/certmanager/caissuer/ --ignore-not-found" SIGKILL SIGTERM SIGQUIT
 fi
 
-# Keep the bucket count in sync with test/ha/ha.go
+# Keep the bucket count in sync with test/ha/ha.go.
 kubectl -n "${SYSTEM_NAMESPACE}" patch configmap/config-leader-election --type=merge \
   --patch='{"data":{"buckets": "'${BUCKETS}'"}}' || fail_test
 
@@ -78,7 +74,7 @@ scale_controlplane "${HA_COMPONENTS[@]}"
 # lease resources at the old sharding factor, so clean these up.
 kubectl -n ${SYSTEM_NAMESPACE} delete leases --all
 
-# Wait for a new leader Controller to prevent race conditions during service reconciliation
+# Wait for a new leader Controller to prevent race conditions during service reconciliation.
 wait_for_leader_controller || fail_test
 
 # Dump the leases post-setup.
@@ -90,10 +86,21 @@ sleep 30
 
 # Run conformance and e2e tests.
 
+# Currently only Istio, Contour and Kourier implement the alpha features.
+alpha=""
+if [[ -z "${INGRESS_CLASS}" \
+  || "${INGRESS_CLASS}" == "istio.ingress.networking.knative.dev" \
+  || "${INGRESS_CLASS}" == "contour.ingress.networking.knative.dev" \
+  || "${INGRESS_CLASS}" == "kourier.ingress.networking.knative.dev" ]]; then
+  alpha="--enable-alpha"
+fi
+
 go_test_e2e -timeout=30m \
  ./test/conformance/api/... ./test/conformance/runtime/... \
  ./test/e2e \
   ${parallelism} \
+  ${alpha} \
+  --enable-beta \
   "--resolvabledomain=$(use_resolvable_domain)" "${use_https}" "$(ingress_class)" || failed=1
 
 if (( HTTPS )); then
@@ -109,7 +116,7 @@ toggle_feature multi-container Enabled
 go_test_e2e -timeout=2m ./test/e2e/multicontainer || failed=1
 toggle_feature multi-container Disabled
 
-# Enable allow-zero-initial-scale before running e2e tests (for test/e2e/initial_scale_test.go)
+# Enable allow-zero-initial-scale before running e2e tests (for test/e2e/initial_scale_test.go).
 toggle_feature allow-zero-initial-scale true config-autoscaler || fail_test
 go_test_e2e -timeout=2m ./test/e2e/initscale || failed=1
 toggle_feature allow-zero-initial-scale false config-autoscaler || fail_test
@@ -124,13 +131,13 @@ toggle_feature responsive-revision-gc Disabled
 
 # Run scale tests.
 # Note that we use a very high -parallel because each ksvc is run as its own
-# sub-test.  If this is not larger than the maximum scale tested then the test
+# sub-test. If this is not larger than the maximum scale tested then the test
 # simply cannot pass.
 go_test_e2e -timeout=20m -parallel=300 ./test/scale || failed=1
 
-# Run HA tests separately as they're stopping core Knative Serving pods
-# Define short -spoofinterval to ensure frequent probing while stopping pods
-go_test_e2e -timeout=15m -failfast -parallel=1 ./test/ha \
+# Run HA tests separately as they're stopping core Knative Serving pods.
+# Define short -spoofinterval to ensure frequent probing while stopping pods.
+go_test_e2e -timeout=25m -failfast -parallel=1 ./test/ha \
 	    -replicas="${REPLICAS:-1}" -buckets="${BUCKETS:-1}" -spoofinterval="10ms" || failed=1
 
 (( failed )) && fail_test

@@ -26,8 +26,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"knative.dev/pkg/logging"
-	"knative.dev/pkg/logging/logkey"
 	av1alpha1 "knative.dev/serving/pkg/apis/autoscaling/v1alpha1"
 	"knative.dev/serving/pkg/autoscaler/metrics"
 )
@@ -68,6 +66,9 @@ type DeciderSpec struct {
 	PanicThreshold float64
 	// StableWindow is needed to determine when to exit panic mode.
 	StableWindow time.Duration
+	// ScaleDownDelay is the time that must pass at reduced concurrency before a
+	// scale-down decision is applied.
+	ScaleDownDelay time.Duration
 	// InitialScale is the calculated initial scale of the revision, taking both
 	// revision initial scale and cluster initial scale into account. Revision initial
 	// scale overrides cluster initial scale.
@@ -119,7 +120,7 @@ type UniScaler interface {
 	Scale(context.Context, time.Time) ScaleResult
 
 	// Update reconfigures the UniScaler according to the DeciderSpec.
-	Update(*DeciderSpec) error
+	Update(*DeciderSpec)
 }
 
 // UniScalerFactory creates a UniScaler for a given PA using the given dynamic configuration.
@@ -216,8 +217,6 @@ func (m *MultiScaler) Get(_ context.Context, namespace, name string) (*Decider, 
 // Create instantiates the desired Decider.
 func (m *MultiScaler) Create(ctx context.Context, decider *Decider) (*Decider, error) {
 	key := types.NamespacedName{Namespace: decider.Namespace, Name: decider.Name}
-	logger := m.logger.With(zap.String(logkey.Key, key.String()))
-	ctx = logging.WithLogger(ctx, logger)
 	m.scalersMutex.Lock()
 	defer m.scalersMutex.Unlock()
 	scaler, exists := m.scalers[key]
@@ -253,7 +252,7 @@ func (m *MultiScaler) Update(_ context.Context, decider *Decider) (*Decider, err
 }
 
 // Delete stops and removes a Decider.
-func (m *MultiScaler) Delete(_ context.Context, namespace, name string) error {
+func (m *MultiScaler) Delete(_ context.Context, namespace, name string) {
 	key := types.NamespacedName{Namespace: namespace, Name: name}
 	m.scalersMutex.Lock()
 	defer m.scalersMutex.Unlock()
@@ -261,7 +260,6 @@ func (m *MultiScaler) Delete(_ context.Context, namespace, name string) error {
 		close(scaler.stopCh)
 		delete(m.scalers, key)
 	}
-	return nil
 }
 
 // Watch registers a singleton function to call when DeciderStatus is updated.

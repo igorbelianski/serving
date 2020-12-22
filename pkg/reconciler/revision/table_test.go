@@ -1,5 +1,5 @@
 /*
-Copyright 2018 The Knative Authors.
+Copyright 2018 The Knative Authors
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -38,9 +38,8 @@ import (
 	tracingconfig "knative.dev/pkg/tracing/config"
 	asv1a1 "knative.dev/serving/pkg/apis/autoscaling/v1alpha1"
 	defaultconfig "knative.dev/serving/pkg/apis/config"
-	"knative.dev/serving/pkg/apis/serving"
 	v1 "knative.dev/serving/pkg/apis/serving/v1"
-	asconfig "knative.dev/serving/pkg/autoscaler/config"
+	"knative.dev/serving/pkg/autoscaler/config/autoscalerconfig"
 	servingclient "knative.dev/serving/pkg/client/injection/client"
 	revisionreconciler "knative.dev/serving/pkg/client/injection/reconciler/serving/v1/revision"
 	"knative.dev/serving/pkg/reconciler/revision/config"
@@ -387,7 +386,7 @@ func TestReconcile(t *testing.T) {
 		Objects: []runtime.Object{
 			Revision("foo", "fix-mutated-pa",
 				WithK8sServiceName("ill-follow-the-sun"), WithLogURL, MarkRevisionReady,
-				WithRevisionLabel(serving.RouteLabelKey, "foo")),
+				WithRoutingState(v1.RoutingStateActive)),
 			pa("foo", "fix-mutated-pa", WithProtocolType(networking.ProtocolH2C),
 				WithTraffic, WithPASKSReady, WithScaleTargetInitialized, WithReachabilityReachable,
 				WithPAStatusService("fix-mutated-pa")),
@@ -400,7 +399,7 @@ func TestReconcile(t *testing.T) {
 				// When our reconciliation has to change the service
 				// we should see the following mutations to status.
 				WithK8sServiceName("fix-mutated-pa"),
-				WithRevisionLabel(serving.RouteLabelKey, "foo"), WithLogURL, MarkRevisionReady,
+				WithRoutingState(v1.RoutingStateActive), WithLogURL, MarkRevisionReady,
 				withDefaultContainerStatuses()),
 		}},
 		WantUpdates: []clientgotesting.UpdateActionImpl{{
@@ -646,7 +645,7 @@ func TestReconcile(t *testing.T) {
 			listers.GetRevisionLister(), controller.GetEventRecorder(ctx), r,
 			controller.Options{
 				ConfigStore: &testConfigStore{
-					config: ReconcilerTestConfig(),
+					config: reconcilerTestConfig(),
 				},
 			})
 	}))
@@ -727,7 +726,7 @@ type configOption func(*config.Config)
 
 func deploy(t *testing.T, namespace, name string, opts ...interface{}) *appsv1.Deployment {
 	t.Helper()
-	cfg := ReconcilerTestConfig()
+	cfg := reconcilerTestConfig()
 
 	for _, opt := range opts {
 		if configOpt, ok := opt.(configOption); ok {
@@ -746,8 +745,7 @@ func deploy(t *testing.T, namespace, name string, opts ...interface{}) *appsv1.D
 	// Do this here instead of in `rev` itself to ensure that we populate defaults
 	// before calling MakeDeployment within Reconcile.
 	rev.SetDefaults(context.Background())
-	deployment, err := resources.MakeDeployment(rev, cfg.Logging, cfg.Tracing, cfg.Network,
-		cfg.Observability, cfg.Deployment, cfg.Autoscaler)
+	deployment, err := resources.MakeDeployment(rev, cfg)
 	if err != nil {
 		t.Fatal("failed to create deployment")
 	}
@@ -755,7 +753,7 @@ func deploy(t *testing.T, namespace, name string, opts ...interface{}) *appsv1.D
 }
 
 func image(namespace, name string, co ...configOption) *caching.Image {
-	config := ReconcilerTestConfig()
+	config := reconcilerTestConfig()
 	for _, opt := range co {
 		opt(config)
 	}
@@ -801,18 +799,19 @@ func (t *testConfigStore) ToContext(ctx context.Context) context.Context {
 
 var _ pkgreconciler.ConfigStore = (*testConfigStore)(nil)
 
-func ReconcilerTestConfig() *config.Config {
+func reconcilerTestConfig() *config.Config {
 	return &config.Config{
+		Config: &defaultconfig.Config{
+			Defaults: &defaultconfig.Defaults{},
+			Autoscaler: &autoscalerconfig.Config{
+				InitialScale: 1,
+			},
+		},
 		Deployment: testDeploymentConfig(),
 		Observability: &metrics.ObservabilityConfig{
 			LoggingURLTemplate: "http://logger.io/${REVISION_UID}",
 		},
-		Logging:  &logging.Config{},
-		Tracing:  &tracingconfig.Config{},
-		Defaults: &defaultconfig.Defaults{},
-		Autoscaler: &asconfig.Config{
-			InitialScale:          1,
-			AllowZeroInitialScale: false,
-		},
+		Logging: &logging.Config{},
+		Tracing: &tracingconfig.Config{},
 	}
 }

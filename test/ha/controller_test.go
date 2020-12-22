@@ -49,7 +49,7 @@ func TestControllerHA(t *testing.T) {
 	if err != nil {
 		t.Fatal("Failed to get leader:", err)
 	}
-	t.Logf("Got initial leader set: %v", leaders)
+	t.Log("Got initial leader set:", leaders)
 
 	service1Names, resources := createPizzaPlanetService(t)
 	test.EnsureTearDown(t, clients, &service1Names)
@@ -58,7 +58,7 @@ func TestControllerHA(t *testing.T) {
 	defer test.AssertProberDefault(t, prober)
 
 	for _, leader := range leaders.List() {
-		if err := clients.KubeClient.Kube.CoreV1().Pods(system.Namespace()).Delete(context.Background(), leader,
+		if err := clients.KubeClient.CoreV1().Pods(system.Namespace()).Delete(context.Background(), leader,
 			metav1.DeleteOptions{}); err != nil && !apierrs.IsNotFound(err) {
 			t.Fatalf("Failed to delete pod %s: %v", leader, err)
 		}

@@ -1,5 +1,5 @@
 /*
-Copyright 2018 The Knative Authors.
+Copyright 2018 The Knative Authors
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,6 +18,7 @@ package revision
 
 import (
 	"bytes"
+	"context"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/pem"
@@ -38,7 +39,6 @@ import (
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/random"
-	"golang.org/x/net/context"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/sets"
@@ -154,7 +154,7 @@ func TestResolve(t *testing.T) {
 
 	img, err := random.Image(3, 1024)
 	if err != nil {
-		t.Fatalf("random.Image() = %v", err)
+		t.Fatal("random.Image() =", err)
 	}
 
 	// Stand up a fake registry.
@@ -513,11 +513,7 @@ yE+vPxsiUkvQHdO2fojCkY8jg70jxM+gu59tPDNbw3Uh/2Ij310FgTHsnGQMyA==
 		wantErr:            true,
 	}}
 
-	tmpDir, err := ioutil.TempDir("", "TestNewResolverTransport-")
-	if err != nil {
-		t.Fatal("Failed to create tempdir for certs:", err)
-	}
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	for i, tc := range cases {
 		i, tc := i, tc
@@ -529,7 +525,7 @@ yE+vPxsiUkvQHdO2fojCkY8jg70jxM+gu59tPDNbw3Uh/2Ij310FgTHsnGQMyA==
 			}
 
 			// The actual test.
-			if tr, err := newResolverTransport(path); err != nil && !tc.wantErr {
+			if tr, err := newResolverTransport(path, 100, 100); err != nil && !tc.wantErr {
 				t.Error("Got unexpected err:", err)
 			} else if tc.wantErr && err == nil {
 				t.Error("Didn't get an error when we wanted it")

@@ -1,5 +1,5 @@
 /*
-Copyright 2020 The Knative Authors.
+Copyright 2020 The Knative Authors
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -62,17 +62,18 @@ func TestFeaturesConfiguration(t *testing.T) {
 			MultiContainer:          Enabled,
 			PodSpecAffinity:         Enabled,
 			PodSpecDryRun:           Enabled,
+			PodSpecHostAliases:      Enabled,
 			PodSpecNodeSelector:     Enabled,
 			PodSpecRuntimeClassName: Enabled,
 			PodSpecSecurityContext:  Enabled,
 			PodSpecTolerations:      Enabled,
-			ResponsiveRevisionGC:    Enabled,
 			TagHeaderBasedRouting:   Enabled,
 		}),
 		data: map[string]string{
 			"multi-container":                     "Enabled",
 			"kubernetes.podspec-affinity":         "Enabled",
 			"kubernetes.podspec-dryrun":           "Enabled",
+			"kubernetes.podspec-hostaliases":      "Enabled",
 			"kubernetes.podspec-nodeselector":     "Enabled",
 			"kubernetes.podspec-runtimeclassname": "Enabled",
 			"kubernetes.podspec-securitycontext":  "Enabled",
@@ -162,6 +163,33 @@ func TestFeaturesConfiguration(t *testing.T) {
 			"kubernetes.podspec-dryrun": "Disabled",
 		},
 	}, {
+		name:    "kubernetes.podspec-hostaliases Disabled",
+		wantErr: false,
+		wantFeatures: defaultWith(&Features{
+			PodSpecHostAliases: Disabled,
+		}),
+		data: map[string]string{
+			"kubernetes.podspec-hostaliases": "Disabled",
+		},
+	}, {
+		name:    "kubernetes.podspec-hostaliases Allowed",
+		wantErr: false,
+		wantFeatures: defaultWith(&Features{
+			PodSpecHostAliases: Allowed,
+		}),
+		data: map[string]string{
+			"kubernetes.podspec-hostaliases": "Allowed",
+		},
+	}, {
+		name:    "kubernetes.podspec-hostaliases Enabled",
+		wantErr: false,
+		wantFeatures: defaultWith(&Features{
+			PodSpecHostAliases: Enabled,
+		}),
+		data: map[string]string{
+			"kubernetes.podspec-hostaliases": "Enabled",
+		},
+	}, {
 		name:    "kubernetes.podspec-nodeselector Allowed",
 		wantErr: false,
 		wantFeatures: defaultWith(&Features{
@@ -241,24 +269,6 @@ func TestFeaturesConfiguration(t *testing.T) {
 		}),
 		data: map[string]string{
 			"kubernetes.podspec-tolerations": "Disabled",
-		},
-	}, {
-		name:    "responsive-revision-gc Allowed",
-		wantErr: false,
-		wantFeatures: defaultWith(&Features{
-			ResponsiveRevisionGC: Allowed,
-		}),
-		data: map[string]string{
-			"responsive-revision-gc": "Allowed",
-		},
-	}, {
-		name:    "responsive-revision-gc Enabled",
-		wantErr: false,
-		wantFeatures: defaultWith(&Features{
-			ResponsiveRevisionGC: Enabled,
-		}),
-		data: map[string]string{
-			"responsive-revision-gc": "Enabled",
 		},
 	}, {
 		name:    "security context Allowed",

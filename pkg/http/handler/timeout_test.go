@@ -5,7 +5,7 @@ Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 You may obtain a copy of the License at
 
-    https://www.apache.org/licenses/LICENSE-2.0
+    http://www.apache.org/licenses/LICENSE-2.0
 
 Unless required by applicable law or agreed to in writing, software
 distributed under the License is distributed on an "AS IS" BASIS,
@@ -17,6 +17,7 @@ limitations under the License.
 package handler
 
 import (
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -67,7 +68,7 @@ func TestTimeoutWriterErrorsWriteAfterTimeout(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	handler := &timeoutWriter{w: recorder}
 	handler.timeoutAndWriteError("error")
-	if _, err := handler.Write([]byte("hello")); err != http.ErrHandlerTimeout {
+	if _, err := handler.Write([]byte("hello")); !errors.Is(err, http.ErrHandlerTimeout) {
 		t.Errorf("ErrHandlerTimeout got %v, want: %s", err, http.ErrHandlerTimeout)
 	}
 }
@@ -139,10 +140,7 @@ func TestTimeToFirstByteTimeoutHandler(t *testing.T) {
 	}}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			req, err := http.NewRequest(http.MethodGet, "/", nil)
-			if err != nil {
-				t.Fatal(err)
-			}
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
 
 			var reqMux sync.Mutex
 			writeErrors := make(chan error, 1)
@@ -151,7 +149,7 @@ func TestTimeToFirstByteTimeoutHandler(t *testing.T) {
 
 			defer func() {
 				if test.wantPanic {
-					if recovered := recover(); recovered != http.ErrAbortHandler {
+					if recovered := recover(); recovered != http.ErrAbortHandler { //nolint // False positive for errors.Is check
 						t.Errorf("Recover = %v, want: %v", recovered, http.ErrAbortHandler)
 					}
 				}
@@ -170,8 +168,8 @@ func TestTimeToFirstByteTimeoutHandler(t *testing.T) {
 			}
 
 			if test.wantWriteError {
-				if err := <-writeErrors; err != http.ErrHandlerTimeout {
-					t.Errorf("Expected a timeout error, got %v", err)
+				if err := <-writeErrors; !errors.Is(err, http.ErrHandlerTimeout) {
+					t.Error("Expected a timeout error, got", err)
 				}
 			}
 		})

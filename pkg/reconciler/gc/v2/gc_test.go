@@ -1,5 +1,5 @@
 /*
-Copyright 2020 The Knative Authors.
+Copyright 2020 The Knative Authors
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,7 +18,6 @@ package v2
 
 import (
 	"context"
-	"fmt"
 	"testing"
 	"time"
 
@@ -486,30 +485,6 @@ func TestIsRevisionStale(t *testing.T) {
 						Type:   v1.RevisionConditionReady,
 						Status: "Unknown",
 					}},
-				},
-			},
-		},
-		want: false,
-	}, {
-		name: "stale pinned time",
-		rev: &v1.Revision{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:              "myrev",
-				CreationTimestamp: metav1.NewTime(staleTime),
-				Annotations: map[string]string{
-					"serving.knative.dev/lastPinned": fmt.Sprintf("%d", staleTime.Unix()),
-				},
-			},
-		},
-		want: true,
-	}, {
-		name: "fresh pinned time",
-		rev: &v1.Revision{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:              "myrev",
-				CreationTimestamp: metav1.NewTime(staleTime),
-				Annotations: map[string]string{
-					"serving.knative.dev/lastPinned": fmt.Sprintf("%d", curTime.Unix()),
 				},
 			},
 		},

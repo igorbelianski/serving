@@ -24,6 +24,7 @@ import (
 	"testing"
 
 	pkgTest "knative.dev/pkg/test"
+	"knative.dev/pkg/test/spoof"
 	v1 "knative.dev/serving/pkg/apis/serving/v1"
 	"knative.dev/serving/test"
 	v1test "knative.dev/serving/test/v1"
@@ -45,10 +46,10 @@ func assertResourcesUpdatedWhenRevisionIsReady(t *testing.T, clients *test.Clien
 		clients.KubeClient,
 		t.Logf,
 		url,
-		v1test.RetryingRouteInconsistency(pkgTest.MatchesAllOf(pkgTest.IsStatusOK, pkgTest.EventuallyMatchesBody(expectedText))),
+		v1test.RetryingRouteInconsistency(spoof.MatchesAllOf(spoof.IsStatusOK, pkgTest.EventuallyMatchesBody(expectedText))),
 		"WaitForEndpointToServeText",
 		test.ServingFlags.ResolvableDomain,
-		test.AddRootCAtoTransport(context.Background(), t.Logf, clients, test.ServingFlags.Https))
+		test.AddRootCAtoTransport(context.Background(), t.Logf, clients, test.ServingFlags.HTTPS))
 	if err != nil {
 		t.Fatalf("The endpoint for Route %s at %s didn't serve the expected text %q: %v", names.Route, url, expectedText, err)
 	}
@@ -139,7 +140,7 @@ func TestRouteCreation(t *testing.T) {
 	assertResourcesUpdatedWhenRevisionIsReady(t, clients, names, url, "1", test.PizzaPlanetText1)
 
 	// We start a prober at background thread to test if Route is always healthy even during Route update.
-	prober := test.RunRouteProber(t.Logf, clients, url, test.AddRootCAtoTransport(context.Background(), t.Logf, clients, test.ServingFlags.Https))
+	prober := test.RunRouteProber(t.Logf, clients, url, test.AddRootCAtoTransport(context.Background(), t.Logf, clients, test.ServingFlags.HTTPS))
 	defer test.AssertProberDefault(t, prober)
 
 	t.Log("Updating the Configuration to use a different image")

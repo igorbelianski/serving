@@ -33,7 +33,6 @@ import (
 	_ "k8s.io/client-go/plugin/pkg/client/auth/gcp"
 
 	appsv1 "k8s.io/api/apps/v1"
-	"knative.dev/networking/pkg/apis/networking"
 	"knative.dev/pkg/kmeta"
 	"knative.dev/pkg/system"
 	pkgTest "knative.dev/pkg/test"
@@ -41,7 +40,9 @@ import (
 	"knative.dev/serving/pkg/apis/autoscaling"
 	"knative.dev/serving/pkg/apis/serving"
 	v1 "knative.dev/serving/pkg/apis/serving/v1"
-	autoscalerconfig "knative.dev/serving/pkg/autoscaler/config"
+	asconfig "knative.dev/serving/pkg/autoscaler/config"
+	"knative.dev/serving/pkg/autoscaler/config/autoscalerconfig"
+	"knative.dev/serving/pkg/networking"
 	"knative.dev/serving/test"
 	v1test "knative.dev/serving/test/v1"
 )
@@ -55,12 +56,6 @@ func Setup(t *testing.T) *test.Clients {
 // under the alternative namespace.
 func SetupAlternativeNamespace(t *testing.T) *test.Clients {
 	return SetupWithNamespace(t, test.AlternativeServingNamespace)
-}
-
-//SetupServingNamespaceforSecurityTesting creates the client objects needed in e2e tests
-// under the security testing namespace.
-func SetupServingNamespaceforSecurityTesting(t *testing.T) *test.Clients {
-	return SetupWithNamespace(t, test.ServingNamespaceforSecurityTesting)
 }
 
 // SetupWithNamespace creates the client objects needed in the e2e tests under the specified namespace.
@@ -84,12 +79,12 @@ func SetupWithNamespace(t *testing.T, namespace string) *test.Clients {
 // autoscalerCM returns the current autoscaler config map deployed to the
 // test cluster.
 func autoscalerCM(clients *test.Clients) (*autoscalerconfig.Config, error) {
-	autoscalerCM, err := clients.KubeClient.Kube.CoreV1().ConfigMaps(system.Namespace()).Get(
-		context.Background(), autoscalerconfig.ConfigName, metav1.GetOptions{})
+	autoscalerCM, err := clients.KubeClient.CoreV1().ConfigMaps(system.Namespace()).Get(
+		context.Background(), asconfig.ConfigName, metav1.GetOptions{})
 	if err != nil {
 		return nil, err
 	}
-	return autoscalerconfig.NewConfigFromMap(autoscalerCM.Data)
+	return asconfig.NewConfigFromMap(autoscalerCM.Data)
 }
 
 // WaitForScaleToZero will wait for the specified deployment to scale to 0 replicas.
@@ -117,7 +112,7 @@ func WaitForScaleToZero(t *testing.T, deploymentName string, clients *test.Clien
 }
 
 // waitForActivatorEndpoints waits for the Service endpoints to match that of activator.
-func waitForActivatorEndpoints(ctx *testContext) error {
+func waitForActivatorEndpoints(ctx *TestContext) error {
 	var (
 		aset, svcSet sets.String
 		wantAct      int
@@ -125,7 +120,7 @@ func waitForActivatorEndpoints(ctx *testContext) error {
 
 	if rerr := wait.Poll(250*time.Millisecond, time.Minute, func() (bool, error) {
 		// We need to fetch the activator endpoints at every check, since it can change.
-		actEps, err := ctx.clients.KubeClient.Kube.CoreV1().Endpoints(
+		actEps, err := ctx.clients.KubeClient.CoreV1().Endpoints(
 			system.Namespace()).Get(context.Background(), networking.ActivatorServiceName, metav1.GetOptions{})
 		if err != nil {
 			return false, nil
@@ -135,7 +130,7 @@ func waitForActivatorEndpoints(ctx *testContext) error {
 			return false, nil
 		}
 
-		svcEps, err := ctx.clients.KubeClient.Kube.CoreV1().Endpoints(test.ServingNamespace).Get(
+		svcEps, err := ctx.clients.KubeClient.CoreV1().Endpoints(test.ServingNamespace).Get(
 			context.Background(), ctx.resources.Revision.Status.ServiceName, metav1.GetOptions{})
 		if err != nil {
 			return false, err
@@ -174,6 +169,9 @@ func waitForActivatorEndpoints(ctx *testContext) error {
 	return nil
 }
 
+// CreateAndVerifyInitialScaleConfiguration creates a Configuration with the
+// `initialScale` annotation set and validates the `wantPods` number of pods
+// are created.
 func CreateAndVerifyInitialScaleConfiguration(t *testing.T, clients *test.Clients, names test.ResourceNames, wantPods int) {
 	t.Log("Creating a new Configuration.", "configuration", names.Config)
 	_, err := v1test.CreateConfiguration(t, clients, names, func(configuration *v1.Configuration) {
@@ -189,7 +187,7 @@ func CreateAndVerifyInitialScaleConfiguration(t *testing.T, clients *test.Client
 	t.Logf("Waiting for Configuration %q to transition to Ready with %d number of pods.", names.Config, wantPods)
 	selector := fmt.Sprintf("%s=%s", serving.ConfigurationLabelKey, names.Config)
 	if err := v1test.WaitForConfigurationState(clients.ServingClient, names.Config, func(s *v1.Configuration) (b bool, e error) {
-		pods := clients.KubeClient.Kube.CoreV1().Pods(test.ServingNamespace)
+		pods := clients.KubeClient.CoreV1().Pods(test.ServingNamespace)
 		podList, err := pods.List(context.Background(), metav1.ListOptions{
 			LabelSelector: selector,
 			// Include both running and terminating pods, because we will scale down from

@@ -5,7 +5,7 @@ Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 You may obtain a copy of the License at
 
-    https://www.apache.org/licenses/LICENSE-2.0
+    http://www.apache.org/licenses/LICENSE-2.0
 
 Unless required by applicable law or agreed to in writing, software
 distributed under the License is distributed on an "AS IS" BASIS,
@@ -18,6 +18,7 @@ package metric
 
 import (
 	"context"
+	"errors"
 
 	"knative.dev/serving/pkg/apis/autoscaling/v1alpha1"
 	"knative.dev/serving/pkg/autoscaler/metrics"
@@ -34,12 +35,13 @@ type reconciler struct {
 // Check that our Reconciler implements metricreconciler.Interface
 var _ metricreconciler.Interface = (*reconciler)(nil)
 
-func (r *reconciler) ReconcileKind(ctx context.Context, metric *v1alpha1.Metric) pkgreconciler.Event {
+// ReconcileKind implements Interface.ReconcileKind.
+func (r *reconciler) ReconcileKind(_ context.Context, metric *v1alpha1.Metric) pkgreconciler.Event {
 	if err := r.collector.CreateOrUpdate(metric); err != nil {
-		switch err {
-		case metrics.ErrFailedGetEndpoints:
+		switch {
+		case errors.Is(err, metrics.ErrFailedGetEndpoints):
 			metric.Status.MarkMetricNotReady("NoEndpoints", err.Error())
-		case metrics.ErrDidNotReceiveStat:
+		case errors.Is(err, metrics.ErrDidNotReceiveStat):
 			metric.Status.MarkMetricFailed("DidNotReceiveStat", err.Error())
 		default:
 			metric.Status.MarkMetricFailed("CollectionFailed",

@@ -23,7 +23,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"knative.dev/pkg/kmeta"
-	cfgmap "knative.dev/serving/pkg/apis/config"
 	"knative.dev/serving/pkg/apis/serving"
 	v1 "knative.dev/serving/pkg/apis/serving/v1"
 	labelerv2 "knative.dev/serving/pkg/reconciler/labeler/v2"
@@ -31,29 +30,21 @@ import (
 )
 
 // MakeConfiguration creates a Configuration from a Service object.
-func MakeConfiguration(service *v1.Service) (*v1.Configuration, error) {
-	return MakeConfigurationFromExisting(service, &v1.Configuration{}, cfgmap.Allowed)
+func MakeConfiguration(service *v1.Service) *v1.Configuration {
+	return MakeConfigurationFromExisting(service, &v1.Configuration{})
 }
 
 // MakeConfigurationFromExisting creates a Configuration from a Service object given an existing Configuration.
-func MakeConfigurationFromExisting(service *v1.Service, existing *v1.Configuration, gc cfgmap.Flag) (*v1.Configuration, error) {
+func MakeConfigurationFromExisting(service *v1.Service, existing *v1.Configuration) *v1.Configuration {
 	labels := map[string]string{serving.ServiceLabelKey: service.Name}
 	anns := kmeta.FilterMap(service.GetAnnotations(), func(key string) bool {
 		return key == corev1.LastAppliedConfigAnnotation
 	})
 
 	routeName := names.Route(service)
-	if gc != cfgmap.Enabled {
-		labels[serving.RouteLabelKey] = routeName
-	}
-
-	if gc != cfgmap.Disabled {
-		set := labelerv2.GetListAnnValue(existing.Annotations, serving.RoutesAnnotationKey)
-		if !set.Has(routeName) {
-			set.Insert(routeName)
-		}
-		anns[serving.RoutesAnnotationKey] = strings.Join(set.UnsortedList(), ",")
-	}
+	set := labelerv2.GetListAnnValue(existing.Annotations, serving.RoutesAnnotationKey)
+	set.Insert(routeName)
+	anns[serving.RoutesAnnotationKey] = strings.Join(set.UnsortedList(), ",")
 
 	return &v1.Configuration{
 		ObjectMeta: metav1.ObjectMeta{
@@ -66,5 +57,5 @@ func MakeConfigurationFromExisting(service *v1.Service, existing *v1.Configurati
 			Annotations: anns,
 		},
 		Spec: service.Spec.ConfigurationSpec,
-	}, nil
+	}
 }

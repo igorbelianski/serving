@@ -5,7 +5,7 @@ Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 You may obtain a copy of the License at
 
-	http://www.apache.org/licenses/LICENSE-2.0
+    http://www.apache.org/licenses/LICENSE-2.0
 
 Unless required by applicable law or agreed to in writing, software
 distributed under the License is distributed on an "AS IS" BASIS,
@@ -27,6 +27,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 )
 
+// EnvConfig is the config parsed from environment variables by envconfig.
 type EnvConfig struct {
 	FullHostName                  string `envconfig:"full_host_name" required:"true"`
 	DomainName                    string `envconfig:"domain_name" required:"true"`
@@ -36,11 +37,13 @@ type EnvConfig struct {
 	IngressIP                     string `envconfig:"ingress_ip" required:"true"`
 }
 
+// DNSRecord represents an IP and Domain.
 type DNSRecord struct {
 	IP     string
 	Domain string
 }
 
+// MakeRecordSet creates a dns.ResourceRecordSet for a DNSRecord.
 func MakeRecordSet(record *DNSRecord) *dns.ResourceRecordSet {
 	dnsName := record.Domain + "."
 	return &dns.ResourceRecordSet{
@@ -72,7 +75,7 @@ func ChangeDNSRecord(change *dns.Change, svc *dns.Service, dnsProject, dnsZone s
 		return err
 	}
 	// Wait for change to be acknowledged.
-	return wait.PollImmediate(time.Second, 5*time.Minute, func() (bool, error) {
+	return wait.PollImmediate(10*time.Second, 5*time.Minute, func() (bool, error) {
 		tmp, err := svc.Changes.Get(dnsProject, dnsZone, chg.Id).Do()
 		if err != nil {
 			return false, err

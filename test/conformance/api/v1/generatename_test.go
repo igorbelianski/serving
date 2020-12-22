@@ -26,6 +26,7 @@ import (
 	"testing"
 
 	pkgTest "knative.dev/pkg/test"
+	"knative.dev/pkg/test/spoof"
 	v1 "knative.dev/serving/pkg/apis/serving/v1"
 	rtesting "knative.dev/serving/pkg/testing/v1"
 	"knative.dev/serving/test"
@@ -98,10 +99,10 @@ func canServeRequests(t *testing.T, clients *test.Clients, route *v1.Route) erro
 		clients.KubeClient,
 		t.Logf,
 		url,
-		v1test.RetryingRouteInconsistency(pkgTest.MatchesAllOf(pkgTest.IsStatusOK, pkgTest.MatchesBody(test.HelloWorldText))),
+		v1test.RetryingRouteInconsistency(spoof.MatchesAllOf(spoof.IsStatusOK, spoof.MatchesBody(test.HelloWorldText))),
 		"WaitForEndpointToServeText",
 		test.ServingFlags.ResolvableDomain,
-		test.AddRootCAtoTransport(context.Background(), t.Logf, clients, test.ServingFlags.Https))
+		test.AddRootCAtoTransport(context.Background(), t.Logf, clients, test.ServingFlags.HTTPS))
 	if err != nil {
 		return fmt.Errorf("the endpoint for Route %s at %s didn't serve the expected text %q: %w", route.Name, url, test.HelloWorldText, err)
 	}

@@ -18,6 +18,7 @@ package network
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -34,7 +35,7 @@ func (rt RoundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) {
 	return rt(r)
 }
 
-func newAutoTransport(v1 http.RoundTripper, v2 http.RoundTripper) http.RoundTripper {
+func newAutoTransport(v1, v2 http.RoundTripper) http.RoundTripper {
 	return RoundTripperFunc(func(r *http.Request) (*http.Response, error) {
 		t := v1
 		if r.ProtoMajor == 2 {
@@ -76,7 +77,8 @@ func dialBackOffHelper(ctx context.Context, network, address string, bo wait.Bac
 	for {
 		c, err := dialer.DialContext(ctx, network, address)
 		if err != nil {
-			if err, ok := err.(net.Error); ok && err.Timeout() {
+			var errNet net.Error
+			if errors.As(err, &errNet) && errNet.Timeout() {
 				if bo.Steps < 1 {
 					break
 				}
@@ -93,19 +95,13 @@ func dialBackOffHelper(ctx context.Context, network, address string, bo wait.Bac
 }
 
 func newHTTPTransport(disableKeepAlives bool, maxIdle, maxIdlePerHost int) http.RoundTripper {
-	return &http.Transport{
-		// Those match net/http/transport.go
-		Proxy:                 http.ProxyFromEnvironment,
-		IdleConnTimeout:       90 * time.Second,
-		TLSHandshakeTimeout:   10 * time.Second,
-		ExpectContinueTimeout: 1 * time.Second,
-		DisableKeepAlives:     disableKeepAlives,
-
-		// Those are bespoke.
-		DialContext:         DialWithBackOff,
-		MaxIdleConns:        maxIdle,
-		MaxIdleConnsPerHost: maxIdlePerHost,
-	}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.DialContext = DialWithBackOff
+	transport.DisableKeepAlives = disableKeepAlives
+	transport.MaxIdleConns = maxIdle
+	transport.MaxIdleConnsPerHost = maxIdlePerHost
+	transport.ForceAttemptHTTP2 = false
+	return transport
 }
 
 // NewProberTransport creates a RoundTripper that is useful for probing,

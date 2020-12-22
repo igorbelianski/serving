@@ -19,6 +19,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -35,6 +36,7 @@ import (
 	podinformer "knative.dev/pkg/client/injection/kube/informers/core/v1/pod"
 	"knative.dev/pkg/injection"
 	"knative.dev/pkg/injection/sharedmain"
+	"knative.dev/pkg/leaderelection"
 
 	"knative.dev/pkg/configmap"
 	"knative.dev/pkg/controller"
@@ -46,8 +48,10 @@ import (
 	"knative.dev/pkg/version"
 	av1alpha1 "knative.dev/serving/pkg/apis/autoscaling/v1alpha1"
 	"knative.dev/serving/pkg/apis/serving"
+	"knative.dev/serving/pkg/autoscaler/bucket"
 	asmetrics "knative.dev/serving/pkg/autoscaler/metrics"
 	"knative.dev/serving/pkg/autoscaler/scaling"
+	"knative.dev/serving/pkg/autoscaler/statforwarder"
 	"knative.dev/serving/pkg/autoscaler/statserver"
 	smetrics "knative.dev/serving/pkg/metrics"
 	"knative.dev/serving/pkg/reconciler/autoscaling/kpa"
@@ -67,9 +71,9 @@ func main() {
 	ctx := signals.NewContext()
 
 	// Report stats on Go memory usage every 30 seconds.
-	sharedmain.MemStatsOrDie(ctx)
+	metrics.MemStatsOrDie(ctx)
 
-	cfg := sharedmain.ParseAndGetConfigOrDie()
+	cfg := injection.ParseAndGetRESTConfigOrDie()
 
 	log.Printf("Registering %d clients", len(injection.Default.GetClients()))
 	log.Printf("Registering %d informer factories", len(injection.Default.GetInformerFactories()))
@@ -133,10 +137,6 @@ func main() {
 		metric.NewController(ctx, cmw, collector),
 	}
 
-	// Set up a statserver.
-	// TODO(yanweiguo): Populate the isBktOwner from statfowarder.Forwarder.
-	statsServer := statserver.New(statsServerAddr, statsCh, logger, nil /* isBktOwner*/)
-
 	// Start watching the configs.
 	if err := cmw.Start(ctx.Done()); err != nil {
 		logger.Fatalw("Failed to start watching configs", zap.Error(err))
@@ -147,12 +147,45 @@ func main() {
 		logger.Fatalw("Failed to start informers", zap.Error(err))
 	}
 
+	cc := componentConfigAndIP(ctx)
+
+	// accept is the func to call when this pod owns the Revision for this StatMessage.
+	accept := func(sm asmetrics.StatMessage) {
+		collector.Record(sm.Key, time.Unix(sm.Stat.Timestamp, 0), sm.Stat)
+		multiScaler.Poke(sm.Key, sm.Stat)
+	}
+
+	var f *statforwarder.Forwarder
+	if b, bs, err := leaderelection.NewStatefulSetBucketAndSet(int(cc.Buckets)); err == nil {
+		logger.Info("Running with StatefulSet leader election")
+		ctx = leaderelection.WithStatefulSetElectorBuilder(ctx, cc, b)
+		f = statforwarder.New(ctx, bs)
+		if err := statforwarder.StatefulSetBasedProcessor(ctx, f, accept); err != nil {
+			logger.Fatalw("Failed to set up statefulset processors", zap.Error(err))
+		}
+	} else {
+		logger.Info("Running with Standard leader election")
+		ctx = leaderelection.WithStandardLeaderElectorBuilder(ctx, kubeClient, cc)
+		f = statforwarder.New(ctx, bucket.AutoscalerBucketSet(cc.Buckets))
+		if err := statforwarder.LeaseBasedProcessor(ctx, f, accept); err != nil {
+			logger.Fatalw("Failed to set up lease tracking", zap.Error(err))
+		}
+	}
+
+	// Set up a statserver.
+	statsServer := statserver.New(statsServerAddr, statsCh, logger, f.IsBucketOwner)
+
+	defer f.Cancel()
+
 	go controller.StartAll(ctx, controllers...)
 
 	go func() {
 		for sm := range statsCh {
-			collector.Record(sm.Key, time.Now(), sm.Stat)
-			multiScaler.Poke(sm.Key, sm.Stat)
+			// Set the timestamp when first receiving the stat.
+			if sm.Stat.Timestamp == 0 {
+				sm.Stat.Timestamp = time.Now().Unix()
+			}
+			f.Process(sm)
 		}
 	}()
 
@@ -169,7 +202,7 @@ func main() {
 	statsServer.Shutdown(5 * time.Second)
 	profilingServer.Shutdown(context.Background())
 	// Don't forward ErrServerClosed as that indicates we're already shutting down.
-	if err := eg.Wait(); err != nil && err != http.ErrServerClosed {
+	if err := eg.Wait(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		logger.Errorw("Error while running server", zap.Error(err))
 	}
 }
@@ -188,14 +221,11 @@ func uniScalerFactoryFunc(podLister corev1listers.PodLister,
 		serviceName := decider.Labels[serving.ServiceLabelKey] // This can be empty.
 
 		// Create a stats reporter which tags statistics by PA namespace, configuration name, and PA name.
-		ctx, err := smetrics.RevisionContext(decider.Namespace, serviceName, configName, revisionName)
-		if err != nil {
-			return nil, err
-		}
+		ctx := smetrics.RevisionContext(decider.Namespace, serviceName, configName, revisionName)
 
 		podAccessor := resources.NewPodAccessor(podLister, decider.Namespace, revisionName)
-		return scaling.New(decider.Namespace, decider.Name, metricClient,
-			podAccessor, &decider.Spec, ctx)
+		return scaling.New(ctx, decider.Namespace, decider.Name, metricClient,
+			podAccessor, &decider.Spec), nil
 	}
 }
 
@@ -211,11 +241,32 @@ func statsScraperFactoryFunc(podLister corev1listers.PodLister) asmetrics.StatsS
 		}
 
 		podAccessor := resources.NewPodAccessor(podLister, metric.Namespace, revisionName)
-		return asmetrics.NewStatsScraper(metric, podAccessor, logger)
+		return asmetrics.NewStatsScraper(metric, revisionName, podAccessor, logger), nil
 	}
 }
 
 func flush(logger *zap.SugaredLogger) {
 	logger.Sync()
 	metrics.FlushExporter()
+}
+
+func componentConfigAndIP(ctx context.Context) leaderelection.ComponentConfig {
+	id, err := bucket.Identity()
+	if err != nil {
+		logging.FromContext(ctx).Fatalw("Failed to generate Lease holder identify", zap.Error(err))
+	}
+
+	// Set up leader election config
+	leaderElectionConfig, err := sharedmain.GetLeaderElectionConfig(ctx)
+	if err != nil {
+		logging.FromContext(ctx).Fatalw("Error loading leader election configuration", zap.Error(err))
+	}
+
+	cc := leaderElectionConfig.GetComponentConfig(component)
+	cc.LeaseName = func(i uint32) string {
+		return bucket.AutoscalerBucketName(i, cc.Buckets)
+	}
+	cc.Identity = id
+
+	return cc
 }

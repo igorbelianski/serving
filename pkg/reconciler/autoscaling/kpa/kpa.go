@@ -5,7 +5,7 @@ Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 You may obtain a copy of the License at
 
-    https://www.apache.org/licenses/LICENSE-2.0
+    http://www.apache.org/licenses/LICENSE-2.0
 
 Unless required by applicable law or agreed to in writing, software
 distributed under the License is distributed on an "AS IS" BASIS,
@@ -72,6 +72,7 @@ type Reconciler struct {
 // Check that our Reconciler implements pareconciler.Interface
 var _ pareconciler.Interface = (*Reconciler)(nil)
 
+// ReconcileKind implements Interface.ReconcileKind.
 func (c *Reconciler) ReconcileKind(ctx context.Context, pa *pav1alpha1.PodAutoscaler) pkgreconciler.Event {
 	logger := logging.FromContext(ctx)
 
@@ -91,7 +92,8 @@ func (c *Reconciler) ReconcileKind(ctx context.Context, pa *pav1alpha1.PodAutosc
 			return fmt.Errorf("error reconciling SKS: %w", err)
 		}
 		pa.Status.MarkSKSNotReady(noPrivateServiceName) // In both cases this is true.
-		return computeStatus(ctx, pa, podCounts{want: scaleUnknown}, logger)
+		computeStatus(ctx, pa, podCounts{want: scaleUnknown}, logger)
+		return nil
 	}
 
 	pa.Status.MetricsServiceName = sks.Status.PrivateServiceName
@@ -148,7 +150,7 @@ func (c *Reconciler) ReconcileKind(ctx context.Context, pa *pav1alpha1.PodAutosc
 		pa.Status.MarkSKSReady()
 	} else {
 		logger.Debug("SKS is not ready, marking SKS status not ready")
-		pa.Status.MarkSKSNotReady(sks.Status.GetCondition(nv1alpha1.ServerlessServiceConditionReady).Message)
+		pa.Status.MarkSKSNotReady(sks.Status.GetCondition(nv1alpha1.ServerlessServiceConditionReady).GetMessage())
 	}
 
 	logger.Infof("PA scale got=%d, want=%d, desiredPods=%d ebc=%d", ready, want,
@@ -162,7 +164,8 @@ func (c *Reconciler) ReconcileKind(ctx context.Context, pa *pav1alpha1.PodAutosc
 		terminating: terminating,
 	}
 	logger.Infof("Observed pod counts=%#v", pc)
-	return computeStatus(ctx, pa, pc, logger)
+	computeStatus(ctx, pa, pc, logger)
+	return nil
 }
 
 func (c *Reconciler) reconcileDecider(ctx context.Context, pa *pav1alpha1.PodAutoscaler) (*scaling.Decider, error) {
@@ -188,27 +191,19 @@ func (c *Reconciler) reconcileDecider(ctx context.Context, pa *pav1alpha1.PodAut
 	return decider, nil
 }
 
-func computeStatus(ctx context.Context, pa *pav1alpha1.PodAutoscaler, pc podCounts, logger *zap.SugaredLogger) error {
+func computeStatus(ctx context.Context, pa *pav1alpha1.PodAutoscaler, pc podCounts, logger *zap.SugaredLogger) {
 	pa.Status.DesiredScale, pa.Status.ActualScale = ptr.Int32(int32(pc.want)), ptr.Int32(int32(pc.ready))
 
-	if err := reportMetrics(pa, pc); err != nil {
-		return fmt.Errorf("error reporting metrics: %w", err)
-	}
-
+	reportMetrics(pa, pc)
 	computeActiveCondition(ctx, pa, pc)
 	logger.Debugf("PA Status after reconcile: %#v", pa.Status.Status)
-
-	return nil
 }
 
-func reportMetrics(pa *pav1alpha1.PodAutoscaler, pc podCounts) error {
+func reportMetrics(pa *pav1alpha1.PodAutoscaler, pc podCounts) {
 	serviceLabel := pa.Labels[serving.ServiceLabelKey] // This might be empty.
 	configLabel := pa.Labels[serving.ConfigurationLabelKey]
 
-	ctx, err := metrics.RevisionContext(pa.Namespace, serviceLabel, configLabel, pa.Name)
-	if err != nil {
-		return err
-	}
+	ctx := metrics.RevisionContext(pa.Namespace, serviceLabel, configLabel, pa.Name)
 
 	stats := []stats.Measurement{
 		actualPodCountM.M(int64(pc.ready)), notReadyPodCountM.M(int64(pc.notReady)),
@@ -219,7 +214,6 @@ func reportMetrics(pa *pav1alpha1.PodAutoscaler, pc podCounts) error {
 		stats = append(stats, requestedPodCountM.M(int64(pc.want)))
 	}
 	pkgmetrics.RecordBatch(ctx, stats...)
-	return nil
 }
 
 // computeActiveCondition updates the status of a PA given the current scale (got), desired scale (want)
@@ -242,7 +236,7 @@ func computeActiveCondition(ctx context.Context, pa *pav1alpha1.PodAutoscaler, p
 	// In pre-0.17 we could have scaled down normally without ever setting ScaleTargetInitialized.
 	// In this case we'll be in the NoTraffic/inactive state.
 	// TODO(taragu): remove after 0.19
-	alreadyScaledDownSuccessfully := minReady > 0 && pa.Status.GetCondition(pav1alpha1.PodAutoscalerConditionActive).Reason == noTrafficReason
+	alreadyScaledDownSuccessfully := minReady > 0 && pa.Status.GetCondition(pav1alpha1.PodAutoscalerConditionActive).GetReason() == noTrafficReason
 	if (pc.ready >= minReady || alreadyScaledDownSuccessfully) && pa.Status.ServiceName != "" {
 		pa.Status.MarkScaleTargetInitialized()
 	}

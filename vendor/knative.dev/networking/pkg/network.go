@@ -94,6 +94,10 @@ const (
 	// hostname for a Route's tag.
 	TagTemplateKey = "tagTemplate"
 
+	// RolloutDurationKey is the name of the configuration entry
+	// that specifies the default duration of the configuration rollout.
+	RolloutDurationKey = "rolloutDuration"
+
 	// KubeProbeUAPrefix is the user agent prefix of the probe.
 	// Since K8s 1.8, prober requests have
 	//   User-Agent = "kube-probe/{major-version}.{minor-version}".
@@ -228,6 +232,9 @@ type Config struct {
 
 	// TagHeaderBasedRouting specifies if TagHeaderBasedRouting is enabled or not.
 	TagHeaderBasedRouting bool
+
+	// RolloutDurationSecs specifies the default duration for the rollout.
+	RolloutDurationSecs int
 }
 
 // HTTPProtocol indicates a type of HTTP endpoint behavior
@@ -235,7 +242,7 @@ type Config struct {
 type HTTPProtocol string
 
 const (
-	// HTTPEnabled represents HTTP proocol is enabled in Knative ingress.
+	// HTTPEnabled represents HTTP protocol is enabled in Knative ingress.
 	HTTPEnabled HTTPProtocol = "enabled"
 
 	// HTTPDisabled represents HTTP protocol is disabled in Knative ingress.
@@ -272,10 +279,14 @@ func NewConfigFromMap(data map[string]string) (*Config, error) {
 		cm.AsString(DefaultCertificateClassKey, &nc.DefaultCertificateClass),
 		cm.AsString(DomainTemplateKey, &nc.DomainTemplate),
 		cm.AsString(TagTemplateKey, &nc.TagTemplate),
+		cm.AsInt(RolloutDurationKey, &nc.RolloutDurationSecs),
 	); err != nil {
 		return nil, err
 	}
 
+	if nc.RolloutDurationSecs < 0 {
+		return nil, fmt.Errorf("%s must be a positive integer, but was %d", RolloutDurationKey, nc.RolloutDurationSecs)
+	}
 	// Verify domain-template and add to the cache.
 	t, err := template.New("domain-template").Parse(nc.DomainTemplate)
 	if err != nil {

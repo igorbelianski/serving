@@ -13,11 +13,10 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
+
 package v1
 
 import (
-	"fmt"
-	"strconv"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -47,11 +46,16 @@ const (
 	// UserQueueMetricsPortName specifies the port name to use for metrics
 	// emitted by queue-proxy for end user.
 	UserQueueMetricsPortName = "http-usermetric"
+)
 
+const (
+	// AnnotationParseErrorTypeMissing is the value of the Type field for
+	// AnnotationParseErrors which indicate an annotation was missing.
 	AnnotationParseErrorTypeMissing = "Missing"
+
+	// AnnotationParseErrorTypeInvalid is the value of the Type field for
+	// AnnotationParseErrors which indicate an annotation was invalid.
 	AnnotationParseErrorTypeInvalid = "Invalid"
-	LabelParserErrorTypeMissing     = "Missing"
-	LabelParserErrorTypeInvalid     = "Invalid"
 )
 
 const (
@@ -76,6 +80,8 @@ type (
 	RoutingState string
 
 	// +k8s:deepcopy-gen=false
+
+	// AnnotationParseError is the error type representing failures to parse annotations.
 	AnnotationParseError struct {
 		Type  string
 		Value string
@@ -83,12 +89,7 @@ type (
 	}
 
 	// +k8s:deepcopy-gen=false
-	LastPinnedParseError AnnotationParseError
 )
-
-func (e LastPinnedParseError) Error() string {
-	return fmt.Sprintf("%v lastPinned value: %q", e.Type, e.Value)
-}
 
 // GetContainer returns a pointer to the relevant corev1.Container field.
 // It is never nil and should be exactly the specified container if len(containers) == 1 or
@@ -152,8 +153,7 @@ func (r *Revision) GetRoutingStateModified() time.Time {
 
 // IsReachable returns whether or not the revision can be reached by a route.
 func (r *Revision) IsReachable() bool {
-	return r.Labels[serving.RouteLabelKey] != "" ||
-		RoutingState(r.Labels[serving.RoutingStateLabelKey]) == RoutingStateActive
+	return RoutingState(r.Labels[serving.RoutingStateLabelKey]) == RoutingStateActive
 }
 
 // GetProtocol returns the app level network protocol.
@@ -172,53 +172,10 @@ func (r *Revision) GetProtocol() (p net.ProtocolType) {
 	return
 }
 
-// SetLastPinned sets the revision's last pinned annotations
-// to be the specified time.
-func (r *Revision) SetLastPinned(t time.Time) {
-	if r.Annotations == nil {
-		r.Annotations = make(map[string]string, 1)
-	}
-
-	r.Annotations[serving.RevisionLastPinnedAnnotationKey] = RevisionLastPinnedString(t)
-}
-
-// GetLastPinned returns the time the revision was last pinned.
-func (r *Revision) GetLastPinned() (time.Time, error) {
-	if r.Annotations == nil {
-		return time.Time{}, LastPinnedParseError{
-			Type: AnnotationParseErrorTypeMissing,
-		}
-	}
-
-	str, ok := r.Annotations[serving.RevisionLastPinnedAnnotationKey]
-	if !ok {
-		// If a revision is past the create delay without an annotation it is stale.
-		return time.Time{}, LastPinnedParseError{
-			Type: AnnotationParseErrorTypeMissing,
-		}
-	}
-
-	secs, err := strconv.ParseInt(str, 10, 64)
-	if err != nil {
-		return time.Time{}, LastPinnedParseError{
-			Type:  AnnotationParseErrorTypeInvalid,
-			Value: str,
-			Err:   err,
-		}
-	}
-
-	return time.Unix(secs, 0), nil
-}
-
 // IsActivationRequired returns true if activation is required.
 func (rs *RevisionStatus) IsActivationRequired() bool {
 	if c := revisionCondSet.Manage(rs).GetCondition(RevisionConditionActive); c != nil {
 		return c.Status != corev1.ConditionTrue
 	}
 	return false
-}
-
-// RevisionLastPinnedString returns a string representation of the specified time.
-func RevisionLastPinnedString(t time.Time) string {
-	return fmt.Sprintf("%d", t.Unix())
 }

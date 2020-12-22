@@ -15,6 +15,7 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
+
 package tagheader
 
 import (
@@ -25,6 +26,7 @@ import (
 	network "knative.dev/networking/pkg"
 	"knative.dev/pkg/ptr"
 	pkgTest "knative.dev/pkg/test"
+	"knative.dev/pkg/test/spoof"
 	v1 "knative.dev/serving/pkg/apis/serving/v1"
 	rtesting "knative.dev/serving/pkg/testing/v1"
 	"knative.dev/serving/test"
@@ -110,15 +112,17 @@ func TestTagHeaderBasedRouting(t *testing.T) {
 
 	for _, tt := range testCases {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			if _, err := pkgTest.WaitForEndpointState(
 				context.Background(),
 				clients.KubeClient,
 				t.Logf,
 				objects.Service.Status.URL.URL(),
-				v1test.RetryingRouteInconsistency(pkgTest.MatchesAllOf(pkgTest.IsStatusOK, pkgTest.MatchesBody(tt.wantResponse))),
+				v1test.RetryingRouteInconsistency(spoof.MatchesAllOf(spoof.IsStatusOK, spoof.MatchesBody(tt.wantResponse))),
 				"WaitForSuccessfulResponse",
 				test.ServingFlags.ResolvableDomain,
-				test.AddRootCAtoTransport(context.Background(), t.Logf, clients, test.ServingFlags.Https),
+				test.AddRootCAtoTransport(context.Background(), t.Logf, clients, test.ServingFlags.HTTPS),
 				addHeader(tt.header),
 			); err != nil {
 				t.Fatalf("Error probing %s: %v", objects.Service.Status.URL.URL(), err)

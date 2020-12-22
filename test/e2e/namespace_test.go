@@ -15,6 +15,7 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
+
 package e2e
 
 import (
@@ -23,6 +24,7 @@ import (
 	"testing"
 
 	pkgTest "knative.dev/pkg/test"
+	"knative.dev/pkg/test/spoof"
 	"knative.dev/serving/pkg/apis/serving"
 	"knative.dev/serving/test"
 	v1test "knative.dev/serving/test/v1"
@@ -37,10 +39,10 @@ func checkResponse(t *testing.T, clients *test.Clients, names test.ResourceNames
 		clients.KubeClient,
 		t.Logf,
 		names.URL,
-		v1test.RetryingRouteInconsistency(pkgTest.MatchesAllOf(pkgTest.IsStatusOK, pkgTest.EventuallyMatchesBody(expectedText))),
+		v1test.RetryingRouteInconsistency(spoof.MatchesAllOf(spoof.IsStatusOK, pkgTest.EventuallyMatchesBody(expectedText))),
 		"WaitForEndpointToServeText",
 		test.ServingFlags.ResolvableDomain,
-		test.AddRootCAtoTransport(context.Background(), t.Logf, clients, test.ServingFlags.Https),
+		test.AddRootCAtoTransport(context.Background(), t.Logf, clients, test.ServingFlags.HTTPS),
 	)
 	if err != nil {
 		return fmt.Errorf("the endpoint for Route %s at %s didn't serve the expected text %q: %w", names.Route, names.URL.String(), expectedText, err)
@@ -110,9 +112,9 @@ func TestConflictingRouteService(t *testing.T) {
 	}
 
 	altClients := SetupAlternativeNamespace(t)
-	altClients.KubeClient.Kube.CoreV1().Services(test.AlternativeServingNamespace).Create(context.Background(), svc, metav1.CreateOptions{})
+	altClients.KubeClient.CoreV1().Services(test.AlternativeServingNamespace).Create(context.Background(), svc, metav1.CreateOptions{})
 	test.EnsureCleanup(t, func() {
-		altClients.KubeClient.Kube.CoreV1().Services(test.AlternativeServingNamespace).Delete(context.Background(), svc.Name, metav1.DeleteOptions{})
+		altClients.KubeClient.CoreV1().Services(test.AlternativeServingNamespace).Delete(context.Background(), svc.Name, metav1.DeleteOptions{})
 	})
 
 	clients := Setup(t)

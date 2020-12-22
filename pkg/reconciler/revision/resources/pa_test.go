@@ -44,11 +44,10 @@ func TestMakePA(t *testing.T) {
 					Name:      "bar",
 					UID:       "1234",
 					Labels: map[string]string{
-						serving.RouteLabelKey: "some-route",
+						serving.RoutingStateLabelKey: "active",
 					},
 					Annotations: map[string]string{
-						"a":                                     "b",
-						serving.RevisionLastPinnedAnnotationKey: "timeless",
+						"a": "b",
 					},
 				},
 				Spec: v1.RevisionSpec{
@@ -260,7 +259,7 @@ func TestMakePA(t *testing.T) {
 					Name:      "robin",
 					UID:       "4321",
 					Labels: map[string]string{
-						serving.RouteLabelKey: "asdf",
+						serving.RoutingStateLabelKey: "active",
 					},
 				},
 				Spec: v1.RevisionSpec{
@@ -315,7 +314,7 @@ func TestMakePA(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			got := MakePA(test.rev)
 			if !cmp.Equal(got, test.want) {
-				t.Error("MakeK8sService (-want, +got) =", cmp.Diff(test.want, got))
+				t.Error("MakePA (-want, +got) =", cmp.Diff(test.want, got))
 			}
 		})
 	}

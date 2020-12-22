@@ -1,5 +1,5 @@
 /*
-Copyright 2018 The Knative Authors.
+Copyright 2018 The Knative Authors
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -21,7 +21,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/davecgh/go-spew/spew"
 	"github.com/google/go-containerregistry/pkg/authn/k8schain"
+	"go.uber.org/zap/zapcore"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -121,6 +123,7 @@ func (c *Reconciler) reconcileDigest(ctx context.Context, rev *v1.Revision) (boo
 	return false, nil
 }
 
+// ReconcileKind implements Interface.ReconcileKind.
 func (c *Reconciler) ReconcileKind(ctx context.Context, rev *v1.Revision) pkgreconciler.Event {
 	readyBeforeReconcile := rev.IsReady()
 	c.updateRevisionLoggingURL(ctx, rev)
@@ -135,6 +138,15 @@ func (c *Reconciler) ReconcileKind(ctx context.Context, rev *v1.Revision) pkgrec
 		return nil
 	}
 
+	// Spew is an expensive operation so guard the computation on the debug level
+	// being enabled.
+	// Some things, like PA reachability, etc are computed based on various labels/annotations
+	// of revision. So it is useful to provide this information for debugging.
+	logger := logging.FromContext(ctx).Desugar()
+	if logger.Core().Enabled(zapcore.DebugLevel) {
+		logger.Debug("Revision meta: " + spew.Sdump(rev.ObjectMeta))
+	}
+
 	for _, phase := range []func(context.Context, *v1.Revision) error{
 		c.reconcileDeployment,
 		c.reconcileImageCache,
@@ -146,10 +158,12 @@ func (c *Reconciler) ReconcileKind(ctx context.Context, rev *v1.Revision) pkgrec
 	}
 	readyAfterReconcile := rev.Status.GetCondition(v1.RevisionConditionReady).IsTrue()
 	if !readyBeforeReconcile && readyAfterReconcile {
-		logging.FromContext(ctx).Info("Revision became ready")
+		logger.Info("Revision became ready")
 		controller.GetEventRecorder(ctx).Event(
 			rev, corev1.EventTypeNormal, "RevisionReady",
 			"Revision becomes ready upon all resources being ready")
+	} else if readyBeforeReconcile && !readyAfterReconcile {
+		logger.Info("Revision stopped being ready")
 	}
 
 	return nil
@@ -158,6 +172,7 @@ func (c *Reconciler) ReconcileKind(ctx context.Context, rev *v1.Revision) pkgrec
 func (c *Reconciler) updateRevisionLoggingURL(ctx context.Context, rev *v1.Revision) {
 	config := config.FromContext(ctx)
 	if config.Observability.LoggingURLTemplate == "" {
+		rev.Status.LogURL = ""
 		return
 	}
 

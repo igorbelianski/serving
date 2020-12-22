@@ -55,6 +55,13 @@ func withPodSpecAffinityEnabled() configOption {
 	}
 }
 
+func withPodSpecHostAliasesEnabled() configOption {
+	return func(cfg *config.Config) *config.Config {
+		cfg.Features.PodSpecHostAliases = config.Enabled
+		return cfg
+	}
+}
+
 func withPodSpecNodeSelectorEnabled() configOption {
 	return func(cfg *config.Config) *config.Config {
 		cfg.Features.PodSpecNodeSelector = config.Enabled
@@ -454,7 +461,7 @@ func TestPodSpecMultiContainerValidation(t *testing.T) {
 		},
 		cfgOpts: []configOption{withPodSpecFieldRefEnabled()},
 		want: &apis.FieldError{
-			Message: "volume with name \"the-name\" not mounted",
+			Message: `volume with name "the-name" not mounted`,
 			Paths:   []string{"volumes[0].name"}},
 	}, {
 		name: "Volume mounts ok when having multiple containers",
@@ -526,7 +533,7 @@ func TestPodSpecMultiContainerValidation(t *testing.T) {
 			},
 		},
 		want: &apis.FieldError{
-			Message: "volume with name \"the-name2\" not mounted",
+			Message: `volume with name "the-name2" not mounted`,
 			Paths:   []string{"volumes[1].name"},
 		}},
 	}
@@ -579,6 +586,19 @@ func TestPodSpecFeatureValidation(t *testing.T) {
 			Paths:   []string{"affinity"},
 		},
 		cfgOpts: []configOption{withPodSpecAffinityEnabled()},
+	}, {
+		name: "HostAliases",
+		featureSpec: corev1.PodSpec{
+			HostAliases: []corev1.HostAlias{{
+				IP:        "127.0.0.1",
+				Hostnames: []string{"foo.remote", "bar.remote"},
+			}},
+		},
+		err: &apis.FieldError{
+			Message: "must not set the field(s)",
+			Paths:   []string{"hostAliases"},
+		},
+		cfgOpts: []configOption{withPodSpecHostAliasesEnabled()},
 	}, {
 		name: "NodeSelector",
 		featureSpec: corev1.PodSpec{

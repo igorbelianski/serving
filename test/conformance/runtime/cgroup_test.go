@@ -56,7 +56,7 @@ func TestMustHaveCgroupConfigured(t *testing.T) {
 		},
 	}
 
-	// Cgroup settings are based on the CPU and Memory Limits as well as CPU Reuqests
+	// Cgroup settings are based on the CPU and Memory Limits as well as CPU Requests
 	// https://kubernetes.io/docs/concepts/configuration/manage-compute-resources-container/
 	//
 	// It's important to make sure that the memory limit is divisible by common page
@@ -79,7 +79,7 @@ func TestMustHaveCgroupConfigured(t *testing.T) {
 
 	for _, cgroup := range cgroups {
 		if cgroup.Error != "" {
-			t.Errorf("Error getting cgroup information: %v", cgroup.Error)
+			t.Error("Error getting cgroup information:", cgroup.Error)
 			continue
 		}
 
@@ -131,7 +131,7 @@ func TestShouldHaveCgroupReadOnly(t *testing.T) {
 
 	for _, cgroup := range cgroups {
 		if cgroup.Error != "" {
-			t.Errorf("Error getting cgroup information: %v", cgroup.Error)
+			t.Error("Error getting cgroup information:", cgroup.Error)
 			continue
 		}
 		if got, want := *cgroup.ReadOnly, true; got != want {

@@ -28,17 +28,18 @@ import (
 	"time"
 
 	v1 "k8s.io/api/apps/v1"
+	"knative.dev/pkg/injection"
 
 	"github.com/google/mako/go/quickstore"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/watch"
 	"knative.dev/pkg/test/mako"
+	"knative.dev/pkg/test/spoof"
 	"knative.dev/serving/pkg/apis/serving"
 	"knative.dev/serving/test/performance"
 
 	"golang.org/x/sync/errgroup"
 
-	"knative.dev/pkg/injection/sharedmain"
 	pkgTest "knative.dev/pkg/test"
 	"knative.dev/serving/pkg/apis/autoscaling"
 	ktest "knative.dev/serving/pkg/testing/v1"
@@ -63,9 +64,9 @@ const (
 )
 
 func clientsFromConfig() (*test.Clients, error) {
-	cfg, err := sharedmain.GetConfig("", "")
+	cfg, err := injection.GetRESTConfig("", "")
 	if err != nil {
-		return nil, fmt.Errorf("error building kubeconfig: %v", err)
+		return nil, fmt.Errorf("error building kubeconfig: %w", err)
 	}
 	return test.NewClientsFromConfig(cfg, testNamespace)
 }
@@ -112,7 +113,7 @@ func createServices(clients *test.Clients, count int) ([]*v1test.ResourceObjects
 		g.Go(func() error {
 			var err error
 			if objs[ndx], err = v1test.CreateServiceReady(&testing.T{}, clients, testNames[ndx], sos...); err != nil {
-				return fmt.Errorf("%02d: failed to create Ready service: %v", ndx, err)
+				return fmt.Errorf("%02d: failed to create Ready service: %w", ndx, err)
 			}
 			return nil
 		})
@@ -120,7 +121,7 @@ func createServices(clients *test.Clients, count int) ([]*v1test.ResourceObjects
 	if err := g.Wait(); err != nil {
 		return nil, nil, err
 	}
-	log.Printf("Created all the services in %v", time.Since(begin))
+	log.Print("Created all the services in ", time.Since(begin))
 	return objs, cleanupNames, nil
 }
 
@@ -186,7 +187,7 @@ func runScaleFromZero(ctx context.Context, clients *test.Clients, idx int, ro *v
 		serving.ServiceLabelKey: ro.Service.Name,
 	})
 
-	watcher, err := clients.KubeClient.Kube.AppsV1().Deployments(testNamespace).Watch(
+	watcher, err := clients.KubeClient.AppsV1().Deployments(testNamespace).Watch(
 		context.Background(), metav1.ListOptions{LabelSelector: selector.String()})
 	if err != nil {
 		m := fmt.Sprintf("%02d: unable to watch the deployment for the service: %v", idx, err)
@@ -207,7 +208,7 @@ func runScaleFromZero(ctx context.Context, clients *test.Clients, idx int, ro *v
 			clients.KubeClient,
 			log.Printf,
 			url,
-			pkgTest.MatchesAllOf(pkgTest.IsStatusOK, pkgTest.MatchesBody(helloWorldExpectedOutput)),
+			spoof.MatchesAllOf(spoof.IsStatusOK, spoof.MatchesBody(helloWorldExpectedOutput)),
 			"HelloWorldServesText",
 			test.ServingFlags.ResolvableDomain, waitToServe,
 		)

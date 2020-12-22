@@ -24,6 +24,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -52,11 +53,11 @@ func TestNewProbe(t *testing.T) {
 	p := NewProbe(v1p)
 
 	if diff := cmp.Diff(p.Probe, v1p); diff != "" {
-		t.Errorf("NewProbe (-want, +got) = %v", diff)
+		t.Error("NewProbe (-want, +got) =", diff)
 	}
 
 	if c := p.count; c != 0 {
-		t.Errorf("Expected Probe.Count == 0, got: %d", c)
+		t.Error("Expected Probe.Count == 0, got:", c)
 	}
 }
 
@@ -76,6 +77,65 @@ func TestTCPFailure(t *testing.T) {
 
 	if pb.ProbeContainer() {
 		t.Error("Reported success when no server was available for connection")
+	}
+}
+
+func TestAggressiveFailureOnlyLogsOnce(t *testing.T) {
+	pb := NewProbe(&corev1.Probe{
+		PeriodSeconds:    0, // Aggressive probe.
+		TimeoutSeconds:   1,
+		SuccessThreshold: 1,
+		FailureThreshold: 1,
+		Handler: corev1.Handler{
+			TCPSocket: &corev1.TCPSocketAction{
+				Host: "127.0.0.1",
+				Port: intstr.FromInt(12345),
+			},
+		},
+	})
+
+	var buf bytes.Buffer
+	pb.out = &buf
+
+	pb.ProbeContainer()
+	if got := strings.Count(buf.String(), "aggressive probe error"); got != 1 {
+		t.Error("Expected exactly one instance of 'aggressive probe error' in the log, got", got)
+	}
+}
+
+func TestAggressiveFailureNotLoggedOnSuccess(t *testing.T) {
+	var polled atomic.Int64
+	tsURL := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		// Fail a few times before succeeding to ensure no failures are
+		// misleadingly logged as long as we eventually succeed.
+		if polled.Inc() > 20 {
+			w.WriteHeader(200)
+			return
+		}
+
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+
+	pb := NewProbe(&corev1.Probe{
+		PeriodSeconds:    0, // Aggressive probe.
+		TimeoutSeconds:   1,
+		SuccessThreshold: 1,
+		FailureThreshold: 1,
+		Handler: corev1.Handler{
+			HTTPGet: &corev1.HTTPGetAction{
+				Scheme: "http",
+				Host:   tsURL.Hostname(),
+				Port:   intstr.FromString(tsURL.Port()),
+			},
+		},
+	})
+
+	var buf bytes.Buffer
+	pb.out = &buf
+
+	pb.ProbeContainer()
+	if got := buf.String(); got != "" {
+		t.Error("Expected no error to be logged on success, got:", got)
 	}
 }
 
@@ -111,17 +171,9 @@ func TestExecHandler(t *testing.T) {
 }
 
 func TestTCPSuccess(t *testing.T) {
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	tsURL := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-	}))
-	defer ts.Close()
-
-	tsURL, err := url.Parse(ts.URL)
-	if err != nil {
-		t.Fatalf("Failed to parse URL %s: %v", ts.URL, err)
-	}
-
-	t.Log("Port", tsURL.Port())
+	})
 
 	pb := NewProbe(&corev1.Probe{
 		PeriodSeconds:    1,
@@ -162,15 +214,9 @@ func TestHTTPFailureToConnect(t *testing.T) {
 }
 
 func TestHTTPBadResponse(t *testing.T) {
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	tsURL := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
-	}))
-	defer ts.Close()
-
-	tsURL, err := url.Parse(ts.URL)
-	if err != nil {
-		t.Fatalf("Failed to parse URL %s: %v", ts.URL, err)
-	}
+	})
 
 	pb := NewProbe(&corev1.Probe{
 		PeriodSeconds:    1,
@@ -192,15 +238,9 @@ func TestHTTPBadResponse(t *testing.T) {
 }
 
 func TestHTTPSuccess(t *testing.T) {
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	tsURL := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-	}))
-	defer ts.Close()
-
-	tsURL, err := url.Parse(ts.URL)
-	if err != nil {
-		t.Fatalf("Failed to parse URL %s: %v", ts.URL, err)
-	}
+	})
 
 	pb := NewProbe(&corev1.Probe{
 		PeriodSeconds:    1,
@@ -223,18 +263,12 @@ func TestHTTPSuccess(t *testing.T) {
 
 func TestHTTPManyParallel(t *testing.T) {
 	var count atomic.Int32
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	tsURL := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		if count.Inc() == 1 {
 			// Add a small amount of work to allow the requests below to collapse into one.
 			time.Sleep(200 * time.Millisecond)
 		}
-	}))
-	defer ts.Close()
-
-	tsURL, err := url.Parse(ts.URL)
-	if err != nil {
-		t.Fatalf("Failed to parse URL %s: %v", ts.URL, err)
-	}
+	})
 
 	pb := NewProbe(&corev1.Probe{
 		PeriodSeconds:    1,
@@ -273,16 +307,10 @@ func TestHTTPManyParallel(t *testing.T) {
 }
 
 func TestHTTPTimeout(t *testing.T) {
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	tsURL := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(3 * time.Second)
 		w.WriteHeader(http.StatusOK)
-	}))
-	defer ts.Close()
-
-	tsURL, err := url.Parse(ts.URL)
-	if err != nil {
-		t.Fatalf("Failed to parse URL %s: %v", ts.URL, err)
-	}
+	})
 
 	pb := NewProbe(&corev1.Probe{
 		PeriodSeconds:    1,
@@ -304,16 +332,10 @@ func TestHTTPTimeout(t *testing.T) {
 }
 
 func TestHTTPSuccessWithDelay(t *testing.T) {
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	tsURL := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(200 * time.Millisecond)
 		w.WriteHeader(http.StatusOK)
-	}))
-	defer ts.Close()
-
-	tsURL, err := url.Parse(ts.URL)
-	if err != nil {
-		t.Fatalf("Failed to parse URL %s: %v", ts.URL, err)
-	}
+	})
 
 	pb := NewProbe(&corev1.Probe{
 		PeriodSeconds:    1,
@@ -336,20 +358,14 @@ func TestHTTPSuccessWithDelay(t *testing.T) {
 
 func TestKnHTTPSuccessWithRetry(t *testing.T) {
 	var count atomic.Int32
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	tsURL := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		// Fail the very first request.
 		if count.Inc() == 1 {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
 		w.WriteHeader(http.StatusOK)
-	}))
-	defer ts.Close()
-
-	tsURL, err := url.Parse(ts.URL)
-	if err != nil {
-		t.Fatalf("Failed to parse URL %s: %v", ts.URL, err)
-	}
+	})
 
 	pb := NewProbe(&corev1.Probe{
 		PeriodSeconds:    0,
@@ -374,16 +390,10 @@ func TestKnHTTPSuccessWithThreshold(t *testing.T) {
 	var threshold int32 = 3
 
 	var count atomic.Int32
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	tsURL := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		count.Inc()
 		w.WriteHeader(http.StatusOK)
-	}))
-	defer ts.Close()
-
-	tsURL, err := url.Parse(ts.URL)
-	if err != nil {
-		t.Fatalf("Failed to parse URL %s: %v", ts.URL, err)
-	}
+	})
 
 	pb := NewProbe(&corev1.Probe{
 		PeriodSeconds:    0,
@@ -413,20 +423,14 @@ func TestKnHTTPSuccessWithThresholdAndFailure(t *testing.T) {
 	var requestFailure int32 = 2
 
 	var count atomic.Int32
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	tsURL := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		if count.Inc() == requestFailure {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
 
 		w.WriteHeader(http.StatusOK)
-	}))
-	defer ts.Close()
-
-	tsURL, err := url.Parse(ts.URL)
-	if err != nil {
-		t.Fatalf("Failed to parse URL %s: %v", ts.URL, err)
-	}
+	})
 
 	pb := NewProbe(&corev1.Probe{
 		PeriodSeconds:    0,
@@ -450,22 +454,16 @@ func TestKnHTTPSuccessWithThresholdAndFailure(t *testing.T) {
 		t.Error("Expected success.")
 	}
 
-	if count.Load() < threshold+requestFailure {
+	if count := count.Load(); count < threshold+requestFailure {
 		t.Errorf("Wanted %d requests before reporting success, got=%d", threshold+requestFailure, count)
 	}
 }
 
 func TestKnHTTPTimeoutFailure(t *testing.T) {
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	tsURL := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(time.Second)
 		w.WriteHeader(http.StatusOK)
-	}))
-	defer ts.Close()
-
-	tsURL, err := url.Parse(ts.URL)
-	if err != nil {
-		t.Fatalf("Failed to parse URL %s: %v", ts.URL, err)
-	}
+	})
 
 	pb := NewProbe(&corev1.Probe{
 		PeriodSeconds:    0,
@@ -528,6 +526,7 @@ func TestKnUnimplementedProbe(t *testing.T) {
 		t.Error("Got probe success. Wanted failure.")
 	}
 }
+
 func TestKnTCPProbeFailure(t *testing.T) {
 	pb := NewProbe(&corev1.Probe{
 		PeriodSeconds:    0,
@@ -619,7 +618,7 @@ func TestKnTCPProbeSuccessThresholdIncludesFailure(t *testing.T) {
 	listener.Close()
 	time.Sleep(500 * time.Millisecond)
 
-	listener2, err := net.Listen("tcp", fmt.Sprintf(":%d", addr.Port))
+	listener2, err := net.Listen("tcp", fmt.Sprint(":", addr.Port))
 	if err != nil {
 		t.Fatal("Error setting up tcp listener:", err)
 	}
@@ -637,9 +636,23 @@ func TestKnTCPProbeSuccessThresholdIncludesFailure(t *testing.T) {
 	}
 
 	if probeErr := <-errChan; !probeErr {
-		t.Error("Wanted ProbeContainer() successed but got error")
+		t.Error("Wanted ProbeContainer() to succeed, but got error")
 	}
 	if got := pb.count; got < successThreshold {
 		t.Errorf("Count = %d, want: %d", got, successThreshold)
 	}
+}
+
+func newTestServer(t *testing.T, h http.HandlerFunc) *url.URL {
+	t.Helper()
+
+	s := httptest.NewServer(h)
+	t.Cleanup(s.Close)
+
+	u, err := url.Parse(s.URL)
+	if err != nil {
+		t.Fatalf("Failed to parse URL %s: %v", s.URL, err)
+	}
+
+	return u
 }

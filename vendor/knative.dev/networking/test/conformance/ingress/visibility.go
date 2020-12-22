@@ -39,13 +39,11 @@ func TestVisibility(t *testing.T) {
 	// Create the private backend
 	name, port, _ := CreateRuntimeService(ctx, t, clients, networking.ServicePortNameHTTP1)
 
-	privateServiceName := test.ObjectNameForTest(t)
-	shortName := privateServiceName + "." + test.ServingNamespace
-
+	// Generate a different hostname for each of these tests, so that they do not fail when run concurrently.
 	var privateHostNames = map[string]string{
-		"fqdn":     shortName + ".svc.cluster.local",
-		"short":    shortName + ".svc",
-		"shortest": shortName,
+		"fqdn":     test.ObjectNameForTest(t) + "." + test.ServingNamespace + ".svc." + test.NetworkingFlags.ClusterSuffix,
+		"short":    test.ObjectNameForTest(t) + "." + test.ServingNamespace + ".svc",
+		"shortest": test.ObjectNameForTest(t) + "." + test.ServingNamespace,
 	}
 	ingress, client, _ := CreateIngressReady(ctx, t, clients, v1alpha1.IngressSpec{
 		Rules: []v1alpha1.IngressRule{{
@@ -70,8 +68,11 @@ func TestVisibility(t *testing.T) {
 		RuntimeRequestWithExpectations(ctx, t, client, "http://"+privateHostName, []ResponseExpectation{StatusCodeExpectation(sets.NewInt(http.StatusNotFound))}, true)
 	}
 
-	for name, privateHostName := range privateHostNames {
+	for name := range privateHostNames {
+		privateHostName := privateHostNames[name] // avoid the Go iterator capture issue.
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
 			testProxyToHelloworld(ctx, t, ingress, clients, privateHostName)
 		})
 	}
@@ -150,7 +151,7 @@ func TestVisibilitySplit(t *testing.T) {
 	name := test.ObjectNameForTest(t)
 
 	// Create a simple Ingress over the 10 Services.
-	privateHostName := fmt.Sprintf("%s.%s.%s", name, test.ServingNamespace, "svc.cluster.local")
+	privateHostName := fmt.Sprintf("%s.%s.svc.%s", name, test.ServingNamespace, test.NetworkingFlags.ClusterSuffix)
 	localIngress, client, _ := CreateIngressReady(ctx, t, clients, v1alpha1.IngressSpec{
 		Rules: []v1alpha1.IngressRule{{
 			Hosts:      []string{privateHostName},
@@ -215,7 +216,7 @@ func TestVisibilitySplit(t *testing.T) {
 		})
 	}
 	if err := wg.Wait(); err != nil {
-		t.Errorf("Error while sending requests: %v", err)
+		t.Error("Error while sending requests:", err)
 	}
 	close(resultCh)
 
@@ -254,7 +255,7 @@ func TestVisibilityPath(t *testing.T) {
 	const headerName = "Which-Backend"
 
 	name := test.ObjectNameForTest(t)
-	privateHostName := fmt.Sprintf("%s.%s.%s", name, test.ServingNamespace, "svc.cluster.local")
+	privateHostName := fmt.Sprintf("%s.%s.svc.%s", name, test.ServingNamespace, test.NetworkingFlags.ClusterSuffix)
 	localIngress, client, _ := CreateIngressReady(ctx, t, clients, v1alpha1.IngressSpec{
 		Rules: []v1alpha1.IngressRule{{
 			Hosts:      []string{privateHostName},
@@ -361,6 +362,8 @@ func TestVisibilityPath(t *testing.T) {
 
 	for path, want := range tests {
 		t.Run(path, func(t *testing.T) {
+			t.Parallel()
+
 			ri := RuntimeRequest(ctx, t, client, "http://"+publicHostName+path)
 			if ri == nil {
 				return

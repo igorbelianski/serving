@@ -13,6 +13,7 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
+
 package v1
 
 import (
@@ -164,6 +165,12 @@ func TestConfigurationIsReady(t *testing.T) {
 			c := Configuration{Status: tc.status}
 			if e, a := tc.isReady, c.IsReady(); e != a {
 				t.Errorf("%q expected: %v got: %v", tc.name, e, a)
+			}
+
+			c.Generation = 1
+			c.Status.ObservedGeneration = 2
+			if c.IsReady() {
+				t.Error("Expected IsReady() to be false when Generation != ObservedGeneration")
 			}
 		})
 	}

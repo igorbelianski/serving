@@ -171,9 +171,7 @@ func TestMultiScalerScaling(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := ms.Delete(ctx, decider.Namespace, decider.Name); err != nil {
-		t.Errorf("Delete() = %v", err)
-	}
+	ms.Delete(ctx, decider.Namespace, decider.Name)
 
 	// Verify that we stop seeing "ticks"
 	mtp.Channel <- time.Now()
@@ -206,9 +204,7 @@ func TestMultiscalerCreateTBC42(t *testing.T) {
 	if got, want := d.Status.ExcessBurstCapacity, int32(50-42); got != want {
 		t.Errorf("Decider.Status.ExcessBurstCapacity = %d, want: %d", got, want)
 	}
-	if err := ms.Delete(ctx, decider.Namespace, decider.Name); err != nil {
-		t.Errorf("Delete() = %v", err)
-	}
+	ms.Delete(ctx, decider.Namespace, decider.Name)
 }
 
 func TestMultiscalerCreateTBCMinus1(t *testing.T) {
@@ -233,9 +229,7 @@ func TestMultiscalerCreateTBCMinus1(t *testing.T) {
 	if got, want := d.Status.ExcessBurstCapacity, int32(-1); got != want {
 		t.Errorf("Decider.Status.ExcessBurstCapacity = %d, want: %d", got, want)
 	}
-	if err := ms.Delete(ctx, decider.Namespace, decider.Name); err != nil {
-		t.Errorf("Delete() = %v", err)
-	}
+	ms.Delete(ctx, decider.Namespace, decider.Name)
 }
 
 func TestMultiScalerOnlyCapacityChange(t *testing.T) {
@@ -273,9 +267,7 @@ func TestMultiScalerOnlyCapacityChange(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := ms.Delete(ctx, decider.Namespace, decider.Name); err != nil {
-		t.Errorf("Delete() = %v", err)
-	}
+	ms.Delete(ctx, decider.Namespace, decider.Name)
 
 	// Verify that we stop seeing "ticks".
 	mtp.Channel <- time.Now()
@@ -316,10 +308,7 @@ func TestMultiScalerScaleToZero(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = ms.Delete(ctx, decider.Namespace, decider.Name)
-	if err != nil {
-		t.Errorf("Delete() = %v", err)
-	}
+	ms.Delete(ctx, decider.Namespace, decider.Name)
 
 	// Verify that we stop seeing "ticks"
 	mtp.Channel <- time.Now()
@@ -349,7 +338,7 @@ func TestMultiScalerScaleFromZero(t *testing.T) {
 	}
 	metricKey := types.NamespacedName{Namespace: decider.Namespace, Name: decider.Name}
 	if scaler, exists := ms.scalers[metricKey]; !exists {
-		t.Errorf("Failed to get scaler for metric %s", metricKey)
+		t.Error("Failed to get scaler for metric", metricKey)
 	} else if !scaler.updateLatestScale(ScaleResult{0, 10, 2, true}) {
 		t.Error("Failed to set scale for metric to 0")
 	}
@@ -365,9 +354,7 @@ func TestMultiScalerScaleFromZero(t *testing.T) {
 	if err := verifyTick(errCh); err != nil {
 		t.Fatal(err)
 	}
-	if err := ms.Delete(ctx, decider.Namespace, decider.Name); err != nil {
-		t.Errorf("Delete() = %v", err)
-	}
+	ms.Delete(ctx, decider.Namespace, decider.Name)
 }
 
 func TestMultiScalerUpdate(t *testing.T) {
@@ -386,7 +373,7 @@ func TestMultiScalerUpdate(t *testing.T) {
 	}
 	m, err := ms.Get(ctx, decider.Namespace, decider.Name)
 	if err != nil {
-		t.Errorf("Get() = %v", err)
+		t.Error("Get() =", err)
 	}
 	if got, want := m.Spec.TargetValue, 1.0; got != want {
 		t.Errorf("Got target concurrency %v. Wanted %v", got, want)
@@ -395,18 +382,16 @@ func TestMultiScalerUpdate(t *testing.T) {
 	// Update the target and verify the Spec
 	decider.Spec.TargetValue = 10.0
 	if _, err = ms.Update(ctx, decider); err != nil {
-		t.Errorf("Update() = %v", err)
+		t.Error("Update() =", err)
 	}
 	m, err = ms.Get(ctx, decider.Namespace, decider.Name)
 	if err != nil {
-		t.Errorf("Get() = %v", err)
+		t.Error("Get() =", err)
 	}
 	if got, want := m.Spec.TargetValue, 10.0; got != want {
 		t.Errorf("Got target concurrency %v. Wanted %v", got, want)
 	}
-	if err := ms.Delete(ctx, decider.Namespace, decider.Name); err != nil {
-		t.Errorf("Delete() = %v", err)
-	}
+	ms.Delete(ctx, decider.Namespace, decider.Name)
 }
 
 func createMultiScaler(ctx context.Context, l *zap.SugaredLogger) (*MultiScaler, *fakeUniScaler) {
@@ -445,9 +430,7 @@ func (u *fakeUniScaler) setScaleResult(replicas, surplus, na int32, scaled bool)
 	u.numActivators = na
 }
 
-func (u *fakeUniScaler) Update(*DeciderSpec) error {
-	return nil
-}
+func (u *fakeUniScaler) Update(*DeciderSpec) {}
 
 func newDecider() *Decider {
 	return &Decider{
@@ -464,7 +447,7 @@ func newDecider() *Decider {
 
 func TestSameSign(t *testing.T) {
 	tests := []struct {
-		а, b int32
+		a, b int32
 		want bool
 	}{{1982, 1984, true},
 		{-1984, -1988, true},
@@ -473,8 +456,8 @@ func TestSameSign(t *testing.T) {
 		{0, 1, true}, // 0 is considered positive for our needs
 		{0, -42, false}}
 	for _, test := range tests {
-		if got, want := sameSign(test.а, test.b), test.want; got != want {
-			t.Errorf("%d <=> %d: got: %v, want: %v", test.а, test.b, got, want)
+		if got, want := sameSign(test.a, test.b), test.want; got != want {
+			t.Errorf("%d <=> %d: got: %v, want: %v", test.a, test.b, got, want)
 		}
 	}
 }

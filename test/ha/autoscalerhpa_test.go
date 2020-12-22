@@ -50,7 +50,7 @@ func TestAutoscalerHPAHANewRevision(t *testing.T) {
 	if err != nil {
 		t.Fatal("Failed to get leader:", err)
 	}
-	t.Logf("Got initial leader set: %v", leaders)
+	t.Log("Got initial leader set:", leaders)
 
 	names, resources := createPizzaPlanetService(t,
 		rtesting.WithConfigAnnotations(map[string]string{
@@ -62,7 +62,7 @@ func TestAutoscalerHPAHANewRevision(t *testing.T) {
 	test.EnsureTearDown(t, clients, &names)
 
 	for _, leader := range leaders.List() {
-		if err := clients.KubeClient.Kube.CoreV1().Pods(system.Namespace()).Delete(context.Background(), leader,
+		if err := clients.KubeClient.CoreV1().Pods(system.Namespace()).Delete(context.Background(), leader,
 			metav1.DeleteOptions{}); err != nil && !apierrs.IsNotFound(err) {
 			t.Fatalf("Failed to delete pod %s: %v", leader, err)
 		}

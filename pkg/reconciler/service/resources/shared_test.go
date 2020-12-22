@@ -40,7 +40,7 @@ const (
 func expectOwnerReferencesSetCorrectly(t *testing.T, ownerRefs []metav1.OwnerReference) {
 	t.Helper()
 	if got, want := len(ownerRefs), 1; got != want {
-		t.Errorf("expected %d owner refs got %d", want, got)
+		t.Errorf("|Owner refs| = %d, want: %d", got, want)
 		return
 	}
 
@@ -50,7 +50,7 @@ func expectOwnerReferencesSetCorrectly(t *testing.T, ownerRefs []metav1.OwnerRef
 		Name:       testServiceName,
 	}}
 	if diff := cmp.Diff(expectedRefs, ownerRefs, cmpopts.IgnoreFields(expectedRefs[0], "Controller", "BlockOwnerDeletion")); diff != "" {
-		t.Errorf("Unexpected service owner refs diff (-want +got): %v", diff)
+		t.Error("Unexpected service owner refs diff (-want +got):", diff)
 	}
 }
 
@@ -69,7 +69,11 @@ func createConfiguration(containerName string) *v1.ConfigurationSpec {
 }
 
 func createService() *v1.Service {
-	return DefaultService(testServiceName, testServiceNamespace,
+	return createServiceWithName(testServiceName)
+}
+
+func createServiceWithName(name string) *v1.Service {
+	return DefaultService(name, testServiceNamespace,
 		WithConfigSpec(createConfiguration(testContainerName)),
 		WithRouteSpec(v1.RouteSpec{
 			Traffic: []v1.TrafficTarget{{

@@ -17,9 +17,8 @@ limitations under the License.
 package statserver
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
 	"strings"
@@ -100,7 +99,7 @@ func (s *Server) listen() (net.Listener, error) {
 
 func (s *Server) serve(l net.Listener) error {
 	close(s.servingCh)
-	if err := s.wsSrv.Serve(l); err != http.ErrServerClosed {
+	if err := s.wsSrv.Serve(l); !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
 	return nil
@@ -174,8 +173,6 @@ func (s *Server) Handler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// We accept either protobuf-encoded or JSON-encoded messages depending on the
-		// message type to ensure safe upgrades.
 		switch messageType {
 		case websocket.BinaryMessage:
 			var wsms metrics.WireStatMessages
@@ -194,16 +191,6 @@ func (s *Server) Handler(w http.ResponseWriter, r *http.Request) {
 				s.logger.Debugf("Received stat message: %+v", sm)
 				s.statsCh <- sm
 			}
-		case websocket.TextMessage:
-			dec := json.NewDecoder(bytes.NewBuffer(msg))
-			var sm metrics.StatMessage
-			if err = dec.Decode(&sm); err != nil {
-				s.logger.Errorw("Failed to decode json", zap.Error(err))
-				continue
-			}
-
-			s.logger.Debugf("Received stat message: %+v", sm)
-			s.statsCh <- sm
 		default:
 			s.logger.Error("Dropping unknown message type.")
 			continue
@@ -221,7 +208,7 @@ func (s *Server) Shutdown(timeout time.Duration) {
 	defer cancel()
 	err := s.wsSrv.Shutdown(ctx)
 	if err != nil {
-		if err == context.DeadlineExceeded {
+		if errors.Is(err, context.DeadlineExceeded) {
 			s.logger.Warn("Shutdown timed out")
 		} else {
 			s.logger.Errorw("Shutdown failed.", zap.Error(err))

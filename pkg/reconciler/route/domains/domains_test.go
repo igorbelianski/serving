@@ -13,22 +13,22 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
+
 package domains
 
 import (
 	"context"
 	"testing"
-	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/google/go-cmp/cmp"
 	"knative.dev/pkg/apis"
+	pkgnet "knative.dev/pkg/network"
 
 	network "knative.dev/networking/pkg"
 	"knative.dev/serving/pkg/apis/serving"
 	v1 "knative.dev/serving/pkg/apis/serving/v1"
-	"knative.dev/serving/pkg/gc"
 	"knative.dev/serving/pkg/reconciler/route/config"
 )
 
@@ -45,9 +45,6 @@ func testConfig() *config.Config {
 		Network: &network.Config{
 			DefaultIngressClass: "ingress-class-foo",
 			DomainTemplate:      network.DefaultDomainTemplate,
-		},
-		GC: &gc.Config{
-			StaleRevisionLastpinnedDebounce: 1 * time.Minute,
 		},
 	}
 }
@@ -79,7 +76,7 @@ func TestDomainNameFromTemplate(t *testing.T) {
 		name:     "LocalDash",
 		template: "{{.Name}}-{{.Namespace}}.{{.Domain}}",
 		args:     args{name: "test-name"},
-		want:     "test-name.default.svc.cluster.local",
+		want:     pkgnet.GetServiceHostname("test-name", "default"),
 		local:    true,
 	}, {
 		name:     "Short",
@@ -88,10 +85,10 @@ func TestDomainNameFromTemplate(t *testing.T) {
 		want:     "test-name.example.com",
 		local:    false,
 	}, {
-		name:     "SuperShort",
+		name:     "Too Short", // domain must be at least two segments separated by dots.
 		template: "{{.Name}}",
 		args:     args{name: "test-name"},
-		want:     "test-name",
+		wantErr:  true,
 		local:    false,
 	}, {
 		name:     "Annotations",
@@ -109,6 +106,12 @@ func TestDomainNameFromTemplate(t *testing.T) {
 		// This cannot get through our validation, but verify we handle errors.
 		name:     "BadVarName",
 		template: "{{.Name}}.{{.NNNamespace}}.{{.Domain}}",
+		args:     args{name: "test-name"},
+		wantErr:  true,
+		local:    false,
+	}, {
+		name:     "Invalid domain name",
+		template: "{{.Name}}.{{.Namespace}}.{{.Domain}}.Foo",
 		args:     args{name: "test-name"},
 		wantErr:  true,
 		local:    false,
@@ -220,14 +223,19 @@ func TestGetAllDomainsAndTags(t *testing.T) {
 			"myroute.default.example.com":              "",
 		},
 	}, {
-		name:           "bad template",
+		name:           "bad template in domain template",
 		domainTemplate: "{{.NNName}}.{{.Namespace}}.{{.Domain}}",
 		tagTemplate:    "{{.Name}}-{{.Tag}}",
 		wantErr:        true,
 	}, {
-		name:           "bad template",
+		name:           "bad template in tag template",
 		domainTemplate: "{{.Name}}.{{.Namespace}}.{{.Domain}}",
 		tagTemplate:    "{{.NNName}}-{{.Tag}}",
+		wantErr:        true,
+	}, {
+		name:           "bad domain name",
+		domainTemplate: "{{.Name}}.{{.Namespace}}.{{.Domain}}",
+		tagTemplate:    "Foo.{{.Name}}-{{.Tag}}",
 		wantErr:        true,
 	}}
 
@@ -257,7 +265,7 @@ func TestGetAllDomainsAndTags(t *testing.T) {
 				return
 			}
 			if diff := cmp.Diff(tt.want, got); diff != "" {
-				t.Errorf("GetAllDomains() diff (-want +got): %v", diff)
+				t.Error("GetAllDomains() diff (-want +got):", diff)
 			}
 		})
 	}

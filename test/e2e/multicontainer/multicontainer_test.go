@@ -25,6 +25,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 
 	pkgTest "knative.dev/pkg/test"
+	"knative.dev/pkg/test/spoof"
 	v1 "knative.dev/serving/pkg/apis/serving/v1"
 	"knative.dev/serving/test"
 	"knative.dev/serving/test/e2e"
@@ -36,23 +37,27 @@ func TestMultiContainer(t *testing.T) {
 
 	clients := e2e.Setup(t)
 
+	names := test.ResourceNames{
+		Service: test.ObjectNameForTest(t),
+		Image:   test.ServingContainer,
+		Sidecars: []string{
+			test.SidecarContainer,
+		},
+	}
+
 	containers := []corev1.Container{{
-		Image: pkgTest.ImagePath(test.ServingContainer),
+		Image: pkgTest.ImagePath(names.Image),
 		Ports: []corev1.ContainerPort{{
 			ContainerPort: 8881,
 		}},
 	}, {
-		Image: pkgTest.ImagePath(test.SidecarContainer),
+		Image: pkgTest.ImagePath(names.Sidecars[0]),
 	}}
-
-	names := test.ResourceNames{
-		Service: test.ObjectNameForTest(t),
-	}
 
 	test.EnsureTearDown(t, clients, &names)
 	t.Log("Creating a new Service")
 
-	resources, err := v1test.CreateServiceReadyForMultiContainer(t, clients, &names, func(svc *v1.Service) {
+	resources, err := v1test.CreateServiceReady(t, clients, &names, func(svc *v1.Service) {
 		svc.Spec.Template.Spec.Containers = containers
 	})
 	if err != nil {
@@ -65,10 +70,10 @@ func TestMultiContainer(t *testing.T) {
 		clients.KubeClient,
 		t.Logf,
 		url,
-		v1test.RetryingRouteInconsistency(pkgTest.MatchesAllOf(pkgTest.IsStatusOK, pkgTest.MatchesBody(test.MultiContainerResponse))),
+		v1test.RetryingRouteInconsistency(spoof.MatchesAllOf(spoof.IsStatusOK, spoof.MatchesBody(test.MultiContainerResponse))),
 		"MulticontainerServesExpectedText",
 		test.ServingFlags.ResolvableDomain,
-		test.AddRootCAtoTransport(context.Background(), t.Logf, clients, test.ServingFlags.Https),
+		test.AddRootCAtoTransport(context.Background(), t.Logf, clients, test.ServingFlags.HTTPS),
 	); err != nil {
 		t.Fatalf("The endpoint %s for Route %s didn't serve the expected text %q: %v", url, names.Route, test.MultiContainerResponse, err)
 	}

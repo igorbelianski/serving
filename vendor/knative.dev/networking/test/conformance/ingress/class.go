@@ -30,7 +30,7 @@ import (
 	"knative.dev/pkg/reconciler"
 )
 
-// TestIngressClass verifies that kingrress does not pick ingress up when ingress.class annotation is incorrect.
+// TestIngressClass verifies that kingress does not pick ingress up when ingress.class annotation is incorrect.
 func TestIngressClass(t *testing.T) {
 	t.Parallel()
 	ctx, clients := context.Background(), test.Setup(t)
@@ -61,15 +61,20 @@ func TestIngressClass(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
 			verifyIngressWithAnnotations(ctx, t, clients, test.annotations, ingressBackend)
 		})
 	}
 
 }
 
-func verifyIngressWithAnnotations(ctx context.Context, t *testing.T, clients *test.Clients, annotations map[string]string, backend *v1alpha1.IngressBackend) {
+func verifyIngressWithAnnotations(ctx context.Context, t *testing.T, clients *test.Clients,
+	annotations map[string]string, backend *v1alpha1.IngressBackend) {
 	t.Helper()
 
+	// createIngress internally sets hooks to delete the ingress,
+	// so we can ignore `cancel` here.
 	original, _ := CreateIngress(ctx, t, clients,
 		v1alpha1.IngressSpec{
 			Rules: []v1alpha1.IngressRule{{
@@ -92,24 +97,20 @@ func verifyIngressWithAnnotations(ctx context.Context, t *testing.T, clients *te
 		duration = 30 * time.Second
 	)
 	ticker := time.NewTicker(interval)
-	for {
-		select {
-		case <-ticker.C:
-			var ing *v1alpha1.Ingress
-			err := reconciler.RetryTestErrors(func(attempts int) (err error) {
-				ing, err = clients.NetworkingClient.Ingresses.Get(ctx, original.Name, metav1.GetOptions{})
-				return err
-			})
-			if err != nil {
-				t.Fatal("Error getting Ingress:", err)
-			}
-			// Verify ingress is not changed.
-			if !cmp.Equal(original, ing) {
-				t.Fatalf("Unexpected update: diff(-want;+got)\n%s", cmp.Diff(original, ing))
-			}
-		case <-time.After(duration):
-			break
+	select {
+	case <-ticker.C:
+		var ing *v1alpha1.Ingress
+		err := reconciler.RetryTestErrors(func(attempts int) (err error) {
+			ing, err = clients.NetworkingClient.Ingresses.Get(ctx, original.Name, metav1.GetOptions{})
+			return err
+		})
+		if err != nil {
+			t.Fatal("Error getting Ingress:", err)
 		}
-		break
+		// Verify ingress is not changed.
+		if !cmp.Equal(original, ing) {
+			t.Fatalf("Unexpected update: diff(-want;+got)\n%s", cmp.Diff(original, ing))
+		}
+	case <-time.After(duration):
 	}
 }

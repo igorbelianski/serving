@@ -5,7 +5,7 @@ Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 You may obtain a copy of the License at
 
-    https://www.apache.org/licenses/LICENSE-2.0
+    http://www.apache.org/licenses/LICENSE-2.0
 
 Unless required by applicable law or agreed to in writing, software
 distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,20 +13,20 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
+
 package traffic
 
 import (
 	"context"
 	"errors"
-	"log"
+	"fmt"
 	"os"
 	"testing"
-	"time"
 
+	"github.com/davecgh/go-spew/spew"
 	"github.com/google/go-cmp/cmp"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 
 	network "knative.dev/networking/pkg"
@@ -37,7 +37,6 @@ import (
 	fakeclientset "knative.dev/serving/pkg/client/clientset/versioned/fake"
 	informers "knative.dev/serving/pkg/client/informers/externalversions"
 	listers "knative.dev/serving/pkg/client/listers/serving/v1"
-	"knative.dev/serving/pkg/gc"
 	"knative.dev/serving/pkg/reconciler/route/config"
 	"knative.dev/serving/pkg/reconciler/route/domains"
 	. "knative.dev/serving/pkg/testing/v1"
@@ -61,6 +60,10 @@ var (
 	// unreadyConfig only has unreadyRev, and it's not ready.
 	unreadyConfig *v1.Configuration
 	unreadyRev    *v1.Revision
+
+	readyUnreadyConfig *v1.Configuration
+	readyRevision      *v1.Revision
+	newUnreadyRev      *v1.Revision
 
 	// failedConfig only has failedRev, and it fails to be ready.
 	failedConfig *v1.Configuration
@@ -93,6 +96,7 @@ func setUp() {
 	emptyConfig = getTestEmptyConfig("empty")
 	revDeletedConfig = testConfigWithDeletedRevision("latest-rev-deleted")
 	unreadyConfig, unreadyRev = getTestUnreadyConfig("unready")
+	readyUnreadyConfig, readyRevision, newUnreadyRev = createReadyUnreadyConfig("ready-unready")
 	failedConfig, failedRev = getTestFailedConfig("failed")
 	inactiveConfig, inactiveRev = getTestInactiveConfig("inactive")
 	goodConfig, goodOldRev, goodNewRev = getTestReadyConfig("good")
@@ -116,6 +120,7 @@ func setUp() {
 		emptyConfig,
 		goodConfig, goodOldRev, goodNewRev,
 		niceConfig, niceOldRev, niceNewRev,
+		readyUnreadyConfig, readyRevision, newUnreadyRev,
 	}
 
 	for _, obj := range objs {
@@ -146,7 +151,6 @@ func TestBuildTrafficConfigurationVanilla(t *testing.T) {
 					Percent:           ptr.Int64(100),
 					LatestRevision:    ptr.Bool(true),
 				},
-				Active:   true,
 				Protocol: net.ProtocolH2C,
 			}},
 		},
@@ -157,7 +161,6 @@ func TestBuildTrafficConfigurationVanilla(t *testing.T) {
 				Percent:           ptr.Int64(100),
 				LatestRevision:    ptr.Bool(true),
 			},
-			Active:   true,
 			Protocol: net.ProtocolH2C,
 		}},
 		Configurations: map[string]*v1.Configuration{
@@ -167,10 +170,26 @@ func TestBuildTrafficConfigurationVanilla(t *testing.T) {
 			goodNewRev.Name: goodNewRev,
 		},
 	}
-	if tc, err := BuildTrafficConfiguration(configLister, revLister, testRouteWithTrafficTargets(WithSpecTraffic(tts))); err != nil {
-		t.Errorf("Unexpected error %v", err)
-	} else if got, want := tc, expected; !cmp.Equal(want, got, cmpOpts...) {
-		t.Errorf("Unexpected traffic diff (-want +got): %v", cmp.Diff(want, got, cmpOpts...))
+	tc, err := BuildTrafficConfiguration(configLister, revLister, testRouteWithTrafficTargets(WithSpecTraffic(tts)))
+	if err != nil {
+		t.Fatal("Unexpected error", err)
+	}
+	if got, want := tc, expected; !cmp.Equal(want, got, cmpOpts...) {
+		t.Fatalf("Unexpected traffic diff (-want +got):\n%s", cmp.Diff(want, got, cmpOpts...))
+	}
+	gotR := tc.BuildRollout()
+	wantR := &Rollout{
+		Configurations: []ConfigurationRollout{{
+			ConfigurationName: goodConfig.Name,
+			Percent:           100,
+			Revisions: []RevisionRollout{{
+				RevisionName: goodNewRev.Name,
+				Percent:      100,
+			}},
+		}},
+	}
+	if !cmp.Equal(gotR, wantR) {
+		t.Errorf("Rollout mismatch, diff(-want,+got):\n%s", cmp.Diff(wantR, gotR))
 	}
 }
 
@@ -193,7 +212,6 @@ func TestBuildTrafficConfigurationNoNameRevision(t *testing.T) {
 					Percent:           ptr.Int64(100),
 					LatestRevision:    ptr.Bool(false),
 				},
-				Active:   true,
 				Protocol: net.ProtocolH2C,
 			}},
 		},
@@ -204,16 +222,15 @@ func TestBuildTrafficConfigurationNoNameRevision(t *testing.T) {
 				Percent:           ptr.Int64(100),
 				LatestRevision:    ptr.Bool(false),
 			},
-			Active:   true,
 			Protocol: net.ProtocolH2C,
 		}},
 		Configurations: map[string]*v1.Configuration{goodConfig.Name: goodConfig},
 		Revisions:      map[string]*v1.Revision{goodNewRev.Name: goodNewRev},
 	}
 	if tc, err := BuildTrafficConfiguration(configLister, revLister, testRouteWithTrafficTargets(WithSpecTraffic(tts))); err != nil {
-		t.Errorf("Unexpected error %v", err)
+		t.Error("Unexpected error", err)
 	} else if got, want := tc, expected; !cmp.Equal(want, got, cmpOpts...) {
-		t.Errorf("Unexpected traffic diff (-want +got): %v", cmp.Diff(want, got, cmpOpts...))
+		t.Errorf("Unexpected traffic diff (-want +got):\n%s", cmp.Diff(want, got, cmpOpts...))
 	}
 }
 
@@ -232,7 +249,6 @@ func TestBuildTrafficConfigurationVanillaScaledToZero(t *testing.T) {
 					Percent:           ptr.Int64(100),
 					LatestRevision:    ptr.Bool(true),
 				},
-				Active:   false,
 				Protocol: net.ProtocolHTTP1,
 			}},
 		},
@@ -243,7 +259,6 @@ func TestBuildTrafficConfigurationVanillaScaledToZero(t *testing.T) {
 				Percent:           ptr.Int64(100),
 				LatestRevision:    ptr.Bool(true),
 			},
-			Active:   false,
 			Protocol: net.ProtocolHTTP1,
 		}},
 		Configurations: map[string]*v1.Configuration{
@@ -253,10 +268,28 @@ func TestBuildTrafficConfigurationVanillaScaledToZero(t *testing.T) {
 			inactiveRev.Name: inactiveRev,
 		},
 	}
-	if tc, err := BuildTrafficConfiguration(configLister, revLister, testRouteWithTrafficTargets(WithSpecTraffic(tts))); err != nil {
-		t.Errorf("Unexpected error %v", err)
-	} else if got, want := tc, expected; !cmp.Equal(want, got, cmpOpts...) {
-		t.Errorf("Unexpected traffic diff (-want +got): %v", cmp.Diff(want, got, cmpOpts...))
+	tc, err := BuildTrafficConfiguration(configLister, revLister, testRouteWithTrafficTargets(WithSpecTraffic(tts)))
+	if err != nil {
+		t.Fatal("Unexpected error", err)
+	}
+	if got, want := tc, expected; !cmp.Equal(want, got, cmpOpts...) {
+		t.Fatalf("Unexpected traffic diff (-want +got):\n%s", cmp.Diff(want, got, cmpOpts...))
+	}
+
+	// Inactive shouldn't matter for rollout state.
+	gotR := tc.BuildRollout()
+	wantR := &Rollout{
+		Configurations: []ConfigurationRollout{{
+			ConfigurationName: inactiveConfig.Name,
+			Percent:           100,
+			Revisions: []RevisionRollout{{
+				RevisionName: inactiveRev.Name,
+				Percent:      100,
+			}},
+		}},
+	}
+	if !cmp.Equal(gotR, wantR) {
+		t.Errorf("Rollout mismatch, diff(-want,+got):\n%s", cmp.Diff(wantR, gotR))
 	}
 }
 
@@ -271,7 +304,6 @@ func TestBuildTrafficConfigurationTwoConfigs(t *testing.T) {
 					Percent:           ptr.Int64(90),
 					LatestRevision:    ptr.Bool(true),
 				},
-				Active:   true,
 				Protocol: net.ProtocolH2C,
 			}, {
 				TrafficTarget: v1.TrafficTarget{
@@ -280,7 +312,6 @@ func TestBuildTrafficConfigurationTwoConfigs(t *testing.T) {
 					Percent:           ptr.Int64(10),
 					LatestRevision:    ptr.Bool(true),
 				},
-				Active:   true,
 				Protocol: net.ProtocolH2C,
 			}},
 		},
@@ -291,7 +322,6 @@ func TestBuildTrafficConfigurationTwoConfigs(t *testing.T) {
 				Percent:           ptr.Int64(90),
 				LatestRevision:    ptr.Bool(true),
 			},
-			Active:   true,
 			Protocol: net.ProtocolH2C,
 		}, {
 			TrafficTarget: v1.TrafficTarget{
@@ -300,7 +330,6 @@ func TestBuildTrafficConfigurationTwoConfigs(t *testing.T) {
 				Percent:           ptr.Int64(10),
 				LatestRevision:    ptr.Bool(true),
 			},
-			Active:   true,
 			Protocol: net.ProtocolH2C,
 		}},
 		Configurations: map[string]*v1.Configuration{
@@ -319,9 +348,338 @@ func TestBuildTrafficConfigurationTwoConfigs(t *testing.T) {
 		ConfigurationName: goodConfig.Name,
 		Percent:           ptr.Int64(10),
 	}))); err != nil {
-		t.Errorf("Unexpected error %v", err)
+		t.Error("Unexpected error", err)
 	} else if got, want := tc, expected; !cmp.Equal(want, got, cmpOpts...) {
-		t.Errorf("Unexpected traffic diff (-want +got): %v", cmp.Diff(want, got, cmpOpts...))
+		t.Error("Unexpected traffic diff (-want +got):", cmp.Diff(want, got, cmpOpts...))
+	}
+}
+
+func TestBuildTrafficConfigurationTwoEntriesSameConfig(t *testing.T) {
+	expected := &Config{
+		Targets: map[string]RevisionTargets{
+			DefaultTarget: {{
+				TrafficTarget: v1.TrafficTarget{
+					ConfigurationName: niceConfig.Name,
+					RevisionName:      niceNewRev.Name,
+					Percent:           ptr.Int64(100),
+					LatestRevision:    ptr.Bool(true),
+				},
+				Protocol: net.ProtocolH2C,
+			}},
+		},
+		revisionTargets: []RevisionTarget{{
+			TrafficTarget: v1.TrafficTarget{
+				ConfigurationName: niceConfig.Name,
+				RevisionName:      niceNewRev.Name,
+				Percent:           ptr.Int64(100),
+				LatestRevision:    ptr.Bool(true),
+			},
+			Protocol: net.ProtocolH2C,
+		}},
+		Configurations: map[string]*v1.Configuration{
+			niceConfig.Name: niceConfig,
+		},
+		Revisions: map[string]*v1.Revision{
+			niceNewRev.Name: niceNewRev,
+		},
+	}
+
+	// Test 42%/42%/16% split.
+	tc, err := BuildTrafficConfiguration(
+		configLister, revLister, testRouteWithTrafficTargets(
+			WithSpecTraffic([]v1.TrafficTarget{{
+				ConfigurationName: niceConfig.Name,
+				Percent:           ptr.Int64(42),
+			}, {
+				ConfigurationName: niceConfig.Name,
+				Percent:           ptr.Int64(16),
+			}, {
+				ConfigurationName: niceConfig.Name,
+				Percent:           ptr.Int64(42),
+			}}...)))
+	if err != nil {
+		t.Error("Unexpected error", err)
+	} else if got, want := tc, expected; !cmp.Equal(want, got, cmpOpts...) {
+		fmt.Println(spew.Sdump(got))
+		t.Error("Unexpected traffic diff (-want +got):", cmp.Diff(want, got, cmpOpts...))
+	}
+
+	// Test 100%/nil case.
+	tc, err = BuildTrafficConfiguration(
+		configLister, revLister,
+		testRouteWithTrafficTargets(WithSpecTraffic([]v1.TrafficTarget{{
+			ConfigurationName: niceConfig.Name,
+			Percent:           ptr.Int64(100),
+		}, {
+			ConfigurationName: niceConfig.Name,
+		}, {
+			ConfigurationName: niceConfig.Name, // let's throw in 2 nils! ;-)
+		}}...)))
+	if err != nil {
+		t.Error("Unexpected error", err)
+	} else if got, want := tc, expected; !cmp.Equal(want, got, cmpOpts...) {
+		fmt.Println(spew.Sdump(got))
+		t.Error("Unexpected traffic diff (-want +got):", cmp.Diff(want, got, cmpOpts...))
+	}
+
+	gotR := tc.BuildRollout()
+	wantR := &Rollout{
+		Configurations: []ConfigurationRollout{{
+			ConfigurationName: niceConfig.Name,
+			Percent:           100,
+			Revisions: []RevisionRollout{{
+				RevisionName: niceNewRev.Name,
+				Percent:      100,
+			}},
+		}},
+	}
+	if !cmp.Equal(gotR, wantR) {
+		t.Errorf("Rollout mismatch, diff(-want,+got):\n%s", cmp.Diff(wantR, gotR))
+	}
+}
+
+func TestBuildTrafficConfigThreeConfigs(t *testing.T) {
+	// This tests the rollout building and sorting mostly.
+	expected := &Config{
+		Targets: map[string]RevisionTargets{
+			DefaultTarget: {{
+				TrafficTarget: v1.TrafficTarget{
+					ConfigurationName: niceConfig.Name,
+					RevisionName:      niceNewRev.Name,
+					Percent:           ptr.Int64(30),
+					LatestRevision:    ptr.Bool(true),
+				},
+				Protocol: net.ProtocolH2C,
+			}, {
+				TrafficTarget: v1.TrafficTarget{
+					ConfigurationName: goodConfig.Name,
+					RevisionName:      goodNewRev.Name,
+					Percent:           ptr.Int64(35),
+					LatestRevision:    ptr.Bool(true),
+					Tag:               "robert",
+				},
+				Protocol: net.ProtocolH2C,
+			}, {
+				TrafficTarget: v1.TrafficTarget{
+					ConfigurationName: inactiveConfig.Name,
+					RevisionName:      inactiveRev.Name,
+					Percent:           ptr.Int64(35),
+					LatestRevision:    ptr.Bool(true),
+					Tag:               "jackson",
+				},
+				Protocol: net.ProtocolHTTP1,
+			}},
+			"robert": {{
+				TrafficTarget: v1.TrafficTarget{
+					ConfigurationName: goodConfig.Name,
+					RevisionName:      goodNewRev.Name,
+					Percent:           ptr.Int64(100),
+					Tag:               "robert",
+					LatestRevision:    ptr.Bool(true),
+				},
+				Protocol: net.ProtocolH2C,
+			}},
+			"jackson": {{
+				TrafficTarget: v1.TrafficTarget{
+					ConfigurationName: inactiveConfig.Name,
+					RevisionName:      inactiveRev.Name,
+					Percent:           ptr.Int64(100),
+					Tag:               "jackson",
+					LatestRevision:    ptr.Bool(true),
+				},
+				Protocol: net.ProtocolHTTP1,
+			}},
+		},
+		revisionTargets: []RevisionTarget{{
+			TrafficTarget: v1.TrafficTarget{
+				ConfigurationName: niceConfig.Name,
+				RevisionName:      niceNewRev.Name,
+				Percent:           ptr.Int64(30),
+				LatestRevision:    ptr.Bool(true),
+			},
+			Protocol: net.ProtocolH2C,
+		}, {
+			TrafficTarget: v1.TrafficTarget{
+				ConfigurationName: goodConfig.Name,
+				RevisionName:      goodNewRev.Name,
+				Percent:           ptr.Int64(35),
+				LatestRevision:    ptr.Bool(true),
+				Tag:               "robert",
+			},
+			Protocol: net.ProtocolH2C,
+		}, {
+			TrafficTarget: v1.TrafficTarget{
+				ConfigurationName: inactiveConfig.Name,
+				RevisionName:      inactiveRev.Name,
+				Percent:           ptr.Int64(35),
+				LatestRevision:    ptr.Bool(true),
+				Tag:               "jackson",
+			},
+			Protocol: net.ProtocolHTTP1,
+		}},
+		Configurations: map[string]*v1.Configuration{
+			niceConfig.Name:     niceConfig,
+			goodConfig.Name:     goodConfig,
+			inactiveConfig.Name: inactiveConfig,
+		},
+		Revisions: map[string]*v1.Revision{
+			niceNewRev.Name:  niceNewRev,
+			goodNewRev.Name:  goodNewRev,
+			inactiveRev.Name: inactiveRev,
+		},
+	}
+	tc, err := BuildTrafficConfiguration(configLister, revLister, testRouteWithTrafficTargets(WithSpecTraffic([]v1.TrafficTarget{{
+		ConfigurationName: niceConfig.Name,
+		Percent:           ptr.Int64(30),
+	}, {
+		ConfigurationName: goodConfig.Name,
+		Percent:           ptr.Int64(35),
+		Tag:               "robert",
+	}, {
+		ConfigurationName: inactiveConfig.Name,
+		Percent:           ptr.Int64(35),
+		Tag:               "jackson",
+	}}...)))
+	if err != nil {
+		t.Fatal("Unexpected error", err)
+	}
+	if got, want := tc, expected; !cmp.Equal(want, got, cmpOpts...) {
+		fmt.Println(spew.Sdump(got))
+		t.Fatalf("Unexpected traffic diff (-want +got):\n%s", cmp.Diff(want, got, cmpOpts...))
+	}
+
+	gotR := tc.BuildRollout()
+	wantR := &Rollout{
+		// Default tag configs are sorted as well.
+		Configurations: []ConfigurationRollout{{
+			ConfigurationName: goodConfig.Name,
+			Percent:           35,
+			Revisions: []RevisionRollout{{
+				RevisionName: goodNewRev.Name,
+				Percent:      35,
+			}},
+		}, {
+			ConfigurationName: inactiveConfig.Name,
+			Percent:           35,
+			Revisions: []RevisionRollout{{
+				RevisionName: inactiveRev.Name,
+				Percent:      35,
+			}},
+		}, {
+			ConfigurationName: niceConfig.Name,
+			Percent:           30,
+			Revisions: []RevisionRollout{{
+				RevisionName: niceNewRev.Name,
+				Percent:      30,
+			}},
+		}, {
+			// Note sorting flipped these two.
+			ConfigurationName: inactiveConfig.Name,
+			Tag:               "jackson",
+			Percent:           100,
+			Revisions: []RevisionRollout{{
+				RevisionName: inactiveRev.Name,
+				Percent:      100,
+			}},
+		}, {
+			ConfigurationName: goodConfig.Name,
+			Tag:               "robert",
+			Percent:           100,
+			Revisions: []RevisionRollout{{
+				RevisionName: goodNewRev.Name,
+				Percent:      100,
+			}},
+		}},
+	}
+	if !cmp.Equal(gotR, wantR) {
+		t.Errorf("Rollout mismatch, diff(-want,+got):\n%s", cmp.Diff(wantR, gotR))
+	}
+}
+func TestBuildTrafficConfigurationTwoEntriesSameConfigDifferentTags(t *testing.T) {
+	expected := &Config{
+		Targets: map[string]RevisionTargets{
+			DefaultTarget: {{
+				TrafficTarget: v1.TrafficTarget{
+					ConfigurationName: niceConfig.Name,
+					RevisionName:      niceNewRev.Name,
+					Percent:           ptr.Int64(100),
+					LatestRevision:    ptr.Bool(true),
+				},
+				Protocol: net.ProtocolH2C,
+			}},
+			"robert": {{
+				TrafficTarget: v1.TrafficTarget{
+					ConfigurationName: niceConfig.Name,
+					RevisionName:      niceNewRev.Name,
+					Percent:           ptr.Int64(100),
+					Tag:               "robert",
+					LatestRevision:    ptr.Bool(true),
+				},
+				Protocol: net.ProtocolH2C,
+			}},
+		},
+		revisionTargets: []RevisionTarget{{
+			TrafficTarget: v1.TrafficTarget{
+				ConfigurationName: niceConfig.Name,
+				RevisionName:      niceNewRev.Name,
+				Percent:           ptr.Int64(90),
+				LatestRevision:    ptr.Bool(true),
+			},
+			Protocol: net.ProtocolH2C,
+		}, {
+			TrafficTarget: v1.TrafficTarget{
+				ConfigurationName: niceConfig.Name,
+				RevisionName:      niceNewRev.Name,
+				Percent:           ptr.Int64(10),
+				LatestRevision:    ptr.Bool(true),
+				Tag:               "robert",
+			},
+			Protocol: net.ProtocolH2C,
+		}},
+		Configurations: map[string]*v1.Configuration{
+			niceConfig.Name: niceConfig,
+		},
+		Revisions: map[string]*v1.Revision{
+			niceNewRev.Name: niceNewRev,
+		},
+	}
+	tc, err := BuildTrafficConfiguration(configLister, revLister, testRouteWithTrafficTargets(WithSpecTraffic(v1.TrafficTarget{
+		ConfigurationName: niceConfig.Name,
+		Percent:           ptr.Int64(90),
+	}, v1.TrafficTarget{
+		ConfigurationName: niceConfig.Name,
+		Percent:           ptr.Int64(10),
+		Tag:               "robert",
+	})))
+	if err != nil {
+		t.Fatal("Unexpected error", err)
+	}
+	if got, want := tc, expected; !cmp.Equal(want, got, cmpOpts...) {
+		fmt.Println(spew.Sdump(got))
+		t.Fatalf("Unexpected traffic diff (-want +got):\n%s", cmp.Diff(want, got, cmpOpts...))
+	}
+
+	gotR := tc.BuildRollout()
+	wantR := &Rollout{
+		Configurations: []ConfigurationRollout{{
+			ConfigurationName: niceConfig.Name,
+			Percent:           100,
+			Revisions: []RevisionRollout{{
+				RevisionName: niceNewRev.Name,
+				Percent:      100,
+			}},
+		}, {
+			ConfigurationName: niceConfig.Name,
+			Tag:               "robert",
+			Percent:           100,
+			Revisions: []RevisionRollout{{
+				RevisionName: niceNewRev.Name,
+				Percent:      100,
+			}},
+		}},
+	}
+	if !cmp.Equal(gotR, wantR) {
+		t.Errorf("Rollout mismatch, diff(-want,+got):\n%s", cmp.Diff(wantR, gotR))
 	}
 }
 
@@ -336,7 +694,6 @@ func TestBuildTrafficConfigurationCanary(t *testing.T) {
 					Percent:           ptr.Int64(90),
 					LatestRevision:    ptr.Bool(false),
 				},
-				Active:   true,
 				Protocol: net.ProtocolHTTP1,
 			}, {
 				TrafficTarget: v1.TrafficTarget{
@@ -345,7 +702,6 @@ func TestBuildTrafficConfigurationCanary(t *testing.T) {
 					Percent:           ptr.Int64(10),
 					LatestRevision:    ptr.Bool(true),
 				},
-				Active:   true,
 				Protocol: net.ProtocolH2C,
 			}},
 		},
@@ -356,7 +712,6 @@ func TestBuildTrafficConfigurationCanary(t *testing.T) {
 				Percent:           ptr.Int64(90),
 				LatestRevision:    ptr.Bool(false),
 			},
-			Active:   true,
 			Protocol: net.ProtocolHTTP1,
 		}, {
 			TrafficTarget: v1.TrafficTarget{
@@ -365,7 +720,6 @@ func TestBuildTrafficConfigurationCanary(t *testing.T) {
 				Percent:           ptr.Int64(10),
 				LatestRevision:    ptr.Bool(true),
 			},
-			Active:   true,
 			Protocol: net.ProtocolH2C,
 		}},
 		Configurations: map[string]*v1.Configuration{
@@ -376,16 +730,33 @@ func TestBuildTrafficConfigurationCanary(t *testing.T) {
 			goodNewRev.Name: goodNewRev,
 		},
 	}
-	if tc, err := BuildTrafficConfiguration(configLister, revLister, testRouteWithTrafficTargets(WithSpecTraffic(v1.TrafficTarget{
+	tc, err := BuildTrafficConfiguration(configLister, revLister, testRouteWithTrafficTargets(WithSpecTraffic(v1.TrafficTarget{
 		RevisionName: goodOldRev.Name,
 		Percent:      ptr.Int64(90),
 	}, v1.TrafficTarget{
 		ConfigurationName: goodConfig.Name,
 		Percent:           ptr.Int64(10),
-	}))); err != nil {
-		t.Errorf("Unexpected error %v", err)
+	})))
+	if err != nil {
+		t.Error("Unexpected error", err)
 	} else if got, want := tc, expected; !cmp.Equal(want, got, cmpOpts...) {
-		t.Errorf("Unexpected traffic diff (-want +got): %v", cmp.Diff(want, got, cmpOpts...))
+		t.Error("Unexpected traffic diff (-want +got):", cmp.Diff(want, got, cmpOpts...))
+	}
+
+	// Ensure just the 10% is going to be rolled out.
+	gotR := tc.BuildRollout()
+	wantR := &Rollout{
+		Configurations: []ConfigurationRollout{{
+			ConfigurationName: goodConfig.Name,
+			Percent:           10,
+			Revisions: []RevisionRollout{{
+				RevisionName: goodNewRev.Name,
+				Percent:      10,
+			}},
+		}},
+	}
+	if !cmp.Equal(gotR, wantR) {
+		t.Errorf("Rollout mismatch, diff(-want,+got):\n%s", cmp.Diff(wantR, gotR))
 	}
 }
 
@@ -401,7 +772,6 @@ func TestBuildTrafficConfigurationConsolidated(t *testing.T) {
 					Percent:           ptr.Int64(49),
 					LatestRevision:    ptr.Bool(false),
 				},
-				Active:   true,
 				Protocol: net.ProtocolHTTP1,
 			}, {
 				TrafficTarget: v1.TrafficTarget{
@@ -411,7 +781,6 @@ func TestBuildTrafficConfigurationConsolidated(t *testing.T) {
 					Percent:           ptr.Int64(51),
 					LatestRevision:    ptr.Bool(false),
 				},
-				Active:   true,
 				Protocol: net.ProtocolH2C,
 			}},
 			"one": {{
@@ -422,7 +791,6 @@ func TestBuildTrafficConfigurationConsolidated(t *testing.T) {
 					Percent:           ptr.Int64(100),
 					LatestRevision:    ptr.Bool(false),
 				},
-				Active:   true,
 				Protocol: net.ProtocolHTTP1,
 			}},
 			"two": {{
@@ -433,7 +801,6 @@ func TestBuildTrafficConfigurationConsolidated(t *testing.T) {
 					Percent:           ptr.Int64(100),
 					LatestRevision:    ptr.Bool(false),
 				},
-				Active:   true,
 				Protocol: net.ProtocolH2C,
 			}},
 			"also-two": {{
@@ -444,7 +811,6 @@ func TestBuildTrafficConfigurationConsolidated(t *testing.T) {
 					Percent:           ptr.Int64(100),
 					LatestRevision:    ptr.Bool(true),
 				},
-				Active:   true,
 				Protocol: net.ProtocolH2C,
 			}},
 		},
@@ -456,7 +822,6 @@ func TestBuildTrafficConfigurationConsolidated(t *testing.T) {
 				Percent:           ptr.Int64(49),
 				LatestRevision:    ptr.Bool(false),
 			},
-			Active:   true,
 			Protocol: net.ProtocolHTTP1,
 		}, {
 			TrafficTarget: v1.TrafficTarget{
@@ -466,7 +831,6 @@ func TestBuildTrafficConfigurationConsolidated(t *testing.T) {
 				Percent:           ptr.Int64(50),
 				LatestRevision:    ptr.Bool(false),
 			},
-			Active:   true,
 			Protocol: net.ProtocolH2C,
 		}, {
 			TrafficTarget: v1.TrafficTarget{
@@ -476,7 +840,6 @@ func TestBuildTrafficConfigurationConsolidated(t *testing.T) {
 				Percent:           ptr.Int64(1),
 				LatestRevision:    ptr.Bool(true),
 			},
-			Active:   true,
 			Protocol: net.ProtocolH2C,
 		}},
 		Configurations: map[string]*v1.Configuration{
@@ -500,9 +863,9 @@ func TestBuildTrafficConfigurationConsolidated(t *testing.T) {
 		ConfigurationName: goodConfig.Name,
 		Percent:           ptr.Int64(1),
 	}))); err != nil {
-		t.Errorf("Unexpected error %v", err)
+		t.Error("Unexpected error", err)
 	} else if got, want := tc, expected; !cmp.Equal(want, got, cmpOpts...) {
-		t.Errorf("Unexpected traffic diff (-want +got): %v", cmp.Diff(want, got, cmpOpts...))
+		t.Error("Unexpected traffic diff (-want +got):", cmp.Diff(want, got, cmpOpts...))
 	}
 }
 
@@ -517,7 +880,6 @@ func TestBuildTrafficConfigurationTwoFixedRevisions(t *testing.T) {
 					Percent:           ptr.Int64(90),
 					LatestRevision:    ptr.Bool(false),
 				},
-				Active:   true,
 				Protocol: net.ProtocolHTTP1,
 			}, {
 				TrafficTarget: v1.TrafficTarget{
@@ -526,7 +888,6 @@ func TestBuildTrafficConfigurationTwoFixedRevisions(t *testing.T) {
 					Percent:           ptr.Int64(10),
 					LatestRevision:    ptr.Bool(false),
 				},
-				Active:   true,
 				Protocol: net.ProtocolH2C,
 			}},
 		},
@@ -537,7 +898,6 @@ func TestBuildTrafficConfigurationTwoFixedRevisions(t *testing.T) {
 				Percent:           ptr.Int64(90),
 				LatestRevision:    ptr.Bool(false),
 			},
-			Active:   true,
 			Protocol: net.ProtocolHTTP1,
 		}, {
 			TrafficTarget: v1.TrafficTarget{
@@ -546,7 +906,6 @@ func TestBuildTrafficConfigurationTwoFixedRevisions(t *testing.T) {
 				Percent:           ptr.Int64(10),
 				LatestRevision:    ptr.Bool(false),
 			},
-			Active:   true,
 			Protocol: net.ProtocolH2C,
 		}},
 		Configurations: map[string]*v1.Configuration{
@@ -557,16 +916,24 @@ func TestBuildTrafficConfigurationTwoFixedRevisions(t *testing.T) {
 			goodOldRev.Name: goodOldRev,
 		},
 	}
-	if tc, err := BuildTrafficConfiguration(configLister, revLister, testRouteWithTrafficTargets(WithSpecTraffic(v1.TrafficTarget{
+	tc, err := BuildTrafficConfiguration(configLister, revLister, testRouteWithTrafficTargets(WithSpecTraffic(v1.TrafficTarget{
 		RevisionName: goodOldRev.Name,
 		Percent:      ptr.Int64(90),
 	}, v1.TrafficTarget{
 		RevisionName: goodNewRev.Name,
 		Percent:      ptr.Int64(10),
-	}))); err != nil {
-		t.Errorf("Unexpected error %v", err)
-	} else if got, want := tc, expected; !cmp.Equal(want, got, cmpOpts...) {
-		t.Errorf("Unexpected traffic diff (-want +got): %v", cmp.Diff(want, got, cmpOpts...))
+	})))
+	if err != nil {
+		t.Fatal("Unexpected error", err)
+	}
+	if got, want := tc, expected; !cmp.Equal(want, got, cmpOpts...) {
+		t.Fatalf("Unexpected traffic diff (-want +got):\n%s", cmp.Diff(want, got, cmpOpts...))
+	}
+
+	gotR := tc.BuildRollout()
+	wantR := &Rollout{}
+	if !cmp.Equal(gotR, wantR) {
+		t.Errorf("Rollout mismatch, diff(-want,+got):\n%s", cmp.Diff(wantR, gotR))
 	}
 }
 
@@ -581,7 +948,6 @@ func TestBuildTrafficConfigurationTwoFixedRevisionsFromTwoConfigurations(t *test
 					Percent:           ptr.Int64(40),
 					LatestRevision:    ptr.Bool(false),
 				},
-				Active:   true,
 				Protocol: net.ProtocolH2C,
 			}, {
 				TrafficTarget: v1.TrafficTarget{
@@ -590,7 +956,6 @@ func TestBuildTrafficConfigurationTwoFixedRevisionsFromTwoConfigurations(t *test
 					Percent:           ptr.Int64(60),
 					LatestRevision:    ptr.Bool(false),
 				},
-				Active:   true,
 				Protocol: net.ProtocolH2C,
 			}},
 		},
@@ -601,7 +966,6 @@ func TestBuildTrafficConfigurationTwoFixedRevisionsFromTwoConfigurations(t *test
 				Percent:           ptr.Int64(40),
 				LatestRevision:    ptr.Bool(false),
 			},
-			Active:   true,
 			Protocol: net.ProtocolH2C,
 		}, {
 			TrafficTarget: v1.TrafficTarget{
@@ -610,7 +974,6 @@ func TestBuildTrafficConfigurationTwoFixedRevisionsFromTwoConfigurations(t *test
 				Percent:           ptr.Int64(60),
 				LatestRevision:    ptr.Bool(false),
 			},
-			Active:   true,
 			Protocol: net.ProtocolH2C,
 		}},
 		Configurations: map[string]*v1.Configuration{
@@ -629,9 +992,9 @@ func TestBuildTrafficConfigurationTwoFixedRevisionsFromTwoConfigurations(t *test
 		RevisionName: niceNewRev.Name,
 		Percent:      ptr.Int64(60),
 	}))); err != nil {
-		t.Errorf("Unexpected error %v", err)
+		t.Error("Unexpected error", err)
 	} else if got, want := tc, expected; !cmp.Equal(want, got, cmpOpts...) {
-		t.Errorf("Unexpected traffic diff (-want +got): %v", cmp.Diff(want, got, cmpOpts...))
+		t.Error("Unexpected traffic diff (-want +got):", cmp.Diff(want, got, cmpOpts...))
 	}
 }
 
@@ -646,7 +1009,6 @@ func TestBuildTrafficConfigurationPreliminary(t *testing.T) {
 					Percent:           ptr.Int64(100),
 					LatestRevision:    ptr.Bool(false),
 				},
-				Active:   true,
 				Protocol: net.ProtocolHTTP1,
 			}, {
 				TrafficTarget: v1.TrafficTarget{
@@ -654,17 +1016,17 @@ func TestBuildTrafficConfigurationPreliminary(t *testing.T) {
 					ConfigurationName: goodConfig.Name,
 					RevisionName:      goodNewRev.Name,
 					LatestRevision:    ptr.Bool(false),
+					Percent:           ptr.Int64(0),
 				},
-				Active:   true,
 				Protocol: net.ProtocolH2C,
 			}, {
 				TrafficTarget: v1.TrafficTarget{
 					Tag:               "alpha",
 					ConfigurationName: niceConfig.Name,
 					RevisionName:      niceNewRev.Name,
+					Percent:           ptr.Int64(0),
 					LatestRevision:    ptr.Bool(true),
 				},
-				Active:   true,
 				Protocol: net.ProtocolH2C,
 			}},
 			"beta": {{
@@ -675,7 +1037,6 @@ func TestBuildTrafficConfigurationPreliminary(t *testing.T) {
 					Percent:           ptr.Int64(100),
 					LatestRevision:    ptr.Bool(false),
 				},
-				Active:   true,
 				Protocol: net.ProtocolH2C,
 			}},
 			"alpha": {{
@@ -686,7 +1047,6 @@ func TestBuildTrafficConfigurationPreliminary(t *testing.T) {
 					Percent:           ptr.Int64(100),
 					LatestRevision:    ptr.Bool(true),
 				},
-				Active:   true,
 				Protocol: net.ProtocolH2C,
 			}},
 		},
@@ -697,7 +1057,6 @@ func TestBuildTrafficConfigurationPreliminary(t *testing.T) {
 				Percent:           ptr.Int64(100),
 				LatestRevision:    ptr.Bool(false),
 			},
-			Active:   true,
 			Protocol: net.ProtocolHTTP1,
 		}, {
 			TrafficTarget: v1.TrafficTarget{
@@ -705,8 +1064,8 @@ func TestBuildTrafficConfigurationPreliminary(t *testing.T) {
 				ConfigurationName: goodConfig.Name,
 				RevisionName:      goodNewRev.Name,
 				LatestRevision:    ptr.Bool(false),
+				Percent:           ptr.Int64(0),
 			},
-			Active:   true,
 			Protocol: net.ProtocolH2C,
 		}, {
 			TrafficTarget: v1.TrafficTarget{
@@ -714,8 +1073,8 @@ func TestBuildTrafficConfigurationPreliminary(t *testing.T) {
 				ConfigurationName: niceConfig.Name,
 				RevisionName:      niceNewRev.Name,
 				LatestRevision:    ptr.Bool(true),
+				Percent:           ptr.Int64(0),
 			},
-			Active:   true,
 			Protocol: net.ProtocolH2C,
 		}},
 		Configurations: map[string]*v1.Configuration{
@@ -777,7 +1136,7 @@ func TestBuildTrafficConfigurationMissingConfig(t *testing.T) {
 	if tc, err := BuildTrafficConfiguration(configLister, revLister, r); err != nil && expectedErr.Error() != err.Error() {
 		t.Errorf("Expected %v, saw %v", expectedErr, err)
 	} else if got, want := tc, expected; !cmp.Equal(want, got, cmpOpts...) {
-		t.Errorf("Unexpected traffic diff (-want +got): %v", cmp.Diff(want, got, cmpOpts...))
+		t.Error("Unexpected traffic diff (-want +got):", cmp.Diff(want, got, cmpOpts...))
 	}
 }
 
@@ -794,7 +1153,66 @@ func TestBuildTrafficConfigurationNotRoutableRevision(t *testing.T) {
 	}))); err != nil && expectedErr.Error() != err.Error() {
 		t.Errorf("Expected error %v, saw %v", expectedErr, err)
 	} else if got, want := tc, expected; !cmp.Equal(want, got, cmpOpts...) {
-		t.Errorf("Unexpected traffic diff (-want +got): %v", cmp.Diff(want, got, cmpOpts...))
+		t.Error("Unexpected traffic diff (-want +got):", cmp.Diff(want, got, cmpOpts...))
+	}
+}
+
+func TestBuildTrafficConfigurationReadyNotReadyConfig(t *testing.T) {
+	expected := &Config{
+		Targets: map[string]RevisionTargets{
+			DefaultTarget: {{
+				TrafficTarget: v1.TrafficTarget{
+					RevisionName:      readyRevision.Name,
+					ConfigurationName: readyUnreadyConfig.Name,
+					LatestRevision:    ptr.Bool(true),
+					Percent:           ptr.Int64(100),
+				},
+				Protocol: net.ProtocolHTTP1,
+			}},
+		},
+		revisionTargets: []RevisionTarget{{
+			TrafficTarget: v1.TrafficTarget{
+				RevisionName:      readyRevision.Name,
+				ConfigurationName: readyUnreadyConfig.Name,
+				LatestRevision:    ptr.Bool(true),
+				Percent:           ptr.Int64(100),
+			},
+			Protocol: net.ProtocolHTTP1,
+		}},
+		Revisions: map[string]*v1.Revision{
+			readyRevision.Name: readyRevision,
+		},
+		Configurations: map[string]*v1.Configuration{
+			readyUnreadyConfig.Name: readyUnreadyConfig,
+		},
+	}
+	tc, err := BuildTrafficConfiguration(
+		configLister, revLister,
+		testRouteWithTrafficTargets(WithSpecTraffic(v1.TrafficTarget{
+			ConfigurationName: readyUnreadyConfig.Name,
+			LatestRevision:    ptr.Bool(true),
+			Percent:           ptr.Int64(100),
+		},
+		)))
+	if err != nil {
+		t.Fatal("BuildTrafficConfiguration =", err)
+	}
+	if got, want := tc, expected; !cmp.Equal(want, got, cmpOpts...) {
+		t.Errorf("Incorrect trafficm diff:(-want +got):\n%s", cmp.Diff(want, got, cmpOpts...))
+	}
+	gotR := tc.BuildRollout()
+	wantR := &Rollout{
+		Configurations: []ConfigurationRollout{{
+			ConfigurationName: readyUnreadyConfig.Name,
+			Percent:           100,
+			Revisions: []RevisionRollout{{
+				RevisionName: readyRevision.Name,
+				Percent:      100,
+			}},
+		}},
+	}
+	if !cmp.Equal(gotR, wantR) {
+		t.Errorf("Rollout mismatch, diff(-want,+got):\n%s", cmp.Diff(wantR, gotR))
 	}
 }
 
@@ -811,7 +1229,7 @@ func TestBuildTrafficConfigurationNotRoutableConfiguration(t *testing.T) {
 	}))); err != nil && expectedErr.Error() != err.Error() {
 		t.Errorf("Expected error %v, saw %v", expectedErr, err)
 	} else if got, want := tc, expected; !cmp.Equal(want, got, cmpOpts...) {
-		t.Errorf("Unexpected traffic diff (-want +got): %v", cmp.Diff(want, got, cmpOpts...))
+		t.Error("Unexpected traffic diff (-want +got):", cmp.Diff(want, got, cmpOpts...))
 	}
 }
 
@@ -831,7 +1249,7 @@ func TestBuildTrafficConfigurationEmptyConfiguration(t *testing.T) {
 	}))); err != nil && expectedErr.Error() != err.Error() {
 		t.Errorf("Expected error %v, saw %v", expectedErr, err)
 	} else if got, want := tc, expected; !cmp.Equal(want, got, cmpOpts...) {
-		t.Errorf("Unexpected traffic diff (-want +got): %v", cmp.Diff(want, got, cmpOpts...))
+		t.Error("Unexpected traffic diff (-want +got):", cmp.Diff(want, got, cmpOpts...))
 	}
 }
 
@@ -854,7 +1272,7 @@ func TestBuildTrafficConfigurationEmptyAndFailedConfigurations(t *testing.T) {
 	}))); err != nil && expectedErr.Error() != err.Error() {
 		t.Errorf("Expected error %v, saw %v", expectedErr, err)
 	} else if got, want := tc, expected; !cmp.Equal(want, got, cmpOpts...) {
-		t.Errorf("Unexpected traffic diff (-want +got): %v", cmp.Diff(want, got, cmpOpts...))
+		t.Error("Unexpected traffic diff (-want +got):", cmp.Diff(want, got, cmpOpts...))
 	}
 }
 
@@ -877,7 +1295,7 @@ func TestBuildTrafficConfigurationFailedAndEmptyConfigurations(t *testing.T) {
 	}))); err != nil && expectedErr.Error() != err.Error() {
 		t.Errorf("Expected error %v, saw %v", expectedErr, err)
 	} else if got, want := tc, expected; !cmp.Equal(want, got, cmpOpts...) {
-		t.Errorf("Unexpected traffic diff (-want +got): %v", cmp.Diff(want, got, cmpOpts...))
+		t.Error("Unexpected traffic diff (-want +got):", cmp.Diff(want, got, cmpOpts...))
 	}
 }
 
@@ -903,21 +1321,18 @@ func TestBuildTrafficConfigurationMissingRevision(t *testing.T) {
 	}))); err != nil && expectedErr.Error() != err.Error() {
 		t.Errorf("Expected %s, saw %s", expectedErr.Error(), err.Error())
 	} else if got, want := tc, expected; !cmp.Equal(want, got, cmpOpts...) {
-		t.Errorf("Unexpected traffic diff (-want +got): %v", cmp.Diff(want, got, cmpOpts...))
+		t.Error("Unexpected traffic diff (-want +got):", cmp.Diff(want, got, cmpOpts...))
 	}
 }
 
 var errAPI = errors.New("failed to connect API")
 
-type revFakeErrorLister struct{}
+type revFakeErrorLister struct {
+	listers.RevisionNamespaceLister
+}
 
 func (l revFakeErrorLister) Get(name string) (*v1.Revision, error) {
 	return nil, errAPI
-}
-
-func (l revFakeErrorLister) List(selector labels.Selector) ([]*v1.Revision, error) {
-	log.Panic("not implemented")
-	return nil, nil
 }
 
 func (l revFakeErrorLister) Revisions(namespace string) listers.RevisionNamespaceLister {
@@ -929,9 +1344,9 @@ func TestBuildTrafficConfigurationFailedGetRevision(t *testing.T) {
 		RevisionName: goodNewRev.Name,
 		Percent:      ptr.Int64(50)})))
 	if err != nil && err.Error() != errAPI.Error() {
-		t.Errorf("err: %s, want: %s", err.Error(), errAPI.Error())
+		t.Errorf("err: %v, want: %v", err.Error(), errAPI.Error())
 	} else if err == nil {
-		t.Errorf("err: %s, want: no error", errAPI.Error())
+		t.Errorf("err: %v, want: no error", errAPI.Error())
 	}
 }
 
@@ -945,11 +1360,13 @@ func TestRoundTripping(t *testing.T) {
 		RevisionName:   goodNewRev.Name,
 		URL:            domains.URL(domains.HTTPScheme, "beta-test-route.test.example.com"),
 		LatestRevision: ptr.Bool(false),
+		Percent:        ptr.Int64(0),
 	}, {
 		Tag:            "alpha",
 		RevisionName:   niceNewRev.Name,
 		URL:            domains.URL(domains.HTTPScheme, "alpha-test-route.test.example.com"),
 		LatestRevision: ptr.Bool(true),
+		Percent:        ptr.Int64(0),
 	}}
 	route := testRouteWithTrafficTargets(WithSpecTraffic(v1.TrafficTarget{
 		RevisionName: goodOldRev.Name,
@@ -962,9 +1379,83 @@ func TestRoundTripping(t *testing.T) {
 		ConfigurationName: niceConfig.Name,
 	}))
 	if tc, err := BuildTrafficConfiguration(configLister, revLister, route); err != nil {
-		t.Errorf("Unexpected error %v", err)
+		t.Error("Unexpected error", err)
 	} else {
-		targets, err := tc.GetRevisionTrafficTargets(getContext(), route)
+		targets, err := tc.GetRevisionTrafficTargets(getContext(), route, &Rollout{})
+		if err != nil {
+			t.Error("Unexpected error:", err)
+		}
+		if got, want := targets, expected; !cmp.Equal(want, got) {
+			t.Errorf("Unexpected traffic diff (-want +got):\n%s", cmp.Diff(want, got))
+		}
+	}
+}
+
+func TestRoundTrippingWithRollout(t *testing.T) {
+	expected := []v1.TrafficTarget{{
+		RevisionName:   "older-rev",
+		Percent:        ptr.Int64(56),
+		LatestRevision: ptr.Bool(true),
+	}, {
+		RevisionName:   goodOldRev.Name,
+		Percent:        ptr.Int64(44),
+		LatestRevision: ptr.Bool(true),
+	}, {
+		Tag:            "beta",
+		RevisionName:   goodNewRev.Name,
+		URL:            domains.URL(domains.HTTPScheme, "beta-test-route.test.example.com"),
+		LatestRevision: ptr.Bool(false),
+		Percent:        ptr.Int64(0),
+	}, {
+		Tag:            "alpha",
+		RevisionName:   niceOldRev.Name,
+		URL:            domains.URL(domains.HTTPScheme, "alpha-test-route.test.example.com"),
+		LatestRevision: ptr.Bool(true),
+		Percent:        ptr.Int64(81),
+	}, {
+		Tag:            "alpha",
+		RevisionName:   niceNewRev.Name,
+		URL:            domains.URL(domains.HTTPScheme, "alpha-test-route.test.example.com"),
+		LatestRevision: ptr.Bool(true),
+		Percent:        ptr.Int64(19),
+	}}
+	route := testRouteWithTrafficTargets(WithSpecTraffic(v1.TrafficTarget{
+		ConfigurationName: goodConfig.Name,
+		LatestRevision:    ptr.Bool(true),
+		Percent:           ptr.Int64(100),
+	}, v1.TrafficTarget{
+		Tag:          "beta",
+		RevisionName: goodNewRev.Name,
+	}, v1.TrafficTarget{
+		Tag:               "alpha",
+		ConfigurationName: niceConfig.Name,
+	}))
+	ro := &Rollout{
+		Configurations: []ConfigurationRollout{{
+			ConfigurationName: goodConfig.Name,
+			Revisions: []RevisionRollout{{
+				RevisionName: "older-rev",
+				Percent:      56,
+			}, {
+				RevisionName: goodOldRev.Name,
+				Percent:      44,
+			}},
+		}, {
+			ConfigurationName: niceConfig.Name,
+			Tag:               "alpha",
+			Revisions: []RevisionRollout{{
+				RevisionName: niceOldRev.Name,
+				Percent:      81,
+			}, {
+				RevisionName: niceNewRev.Name,
+				Percent:      19,
+			}},
+		}},
+	}
+	if tc, err := BuildTrafficConfiguration(configLister, revLister, route); err != nil {
+		t.Error("Unexpected error", err)
+	} else {
+		targets, err := tc.GetRevisionTrafficTargets(getContext(), route, ro)
 		if err != nil {
 			t.Error("Unexpected error:", err)
 		}
@@ -1021,8 +1512,23 @@ func testConfigWithDeletedRevision(name string) *v1.Configuration {
 	return config
 }
 
+func createReadyUnreadyConfig(name string) (*v1.Configuration, *v1.Revision, *v1.Revision) {
+	config := testConfig(name + "-config")
+
+	rev1 := testRevForConfig(config, name+"-revision-1")
+	rev1.Status.MarkResourcesAvailableTrue()
+	rev1.Status.MarkContainerHealthyTrue()
+	rev1.Status.MarkActiveTrue()
+	config.Status.SetLatestReadyRevisionName(rev1.Name)
+
+	rev2 := testRevForConfig(config, name+"-revision")
+	config.Status.SetLatestCreatedRevisionName(rev2.Name)
+	return config, rev1, rev2
+}
+
 func getTestUnreadyConfig(name string) (*v1.Configuration, *v1.Revision) {
 	config := testConfig(name + "-config")
+
 	rev := testRevForConfig(config, name+"-revision")
 	config.Status.SetLatestCreatedRevisionName(rev.Name)
 	return config, rev
@@ -1068,6 +1574,105 @@ func getTestReadyConfig(name string) (*v1.Configuration, *v1.Revision, *v1.Revis
 	return config, rev1, rev2
 }
 
+func TestBuildTrafficConfigurationTag0Percent(t *testing.T) {
+	expected := &Config{
+		Targets: map[string]RevisionTargets{
+			DefaultTarget: {{
+				TrafficTarget: v1.TrafficTarget{
+					ConfigurationName: niceConfig.Name,
+					RevisionName:      niceNewRev.Name,
+					Percent:           ptr.Int64(100),
+					LatestRevision:    ptr.Bool(true),
+				},
+				Protocol: net.ProtocolH2C,
+			}, {
+				TrafficTarget: v1.TrafficTarget{
+					ConfigurationName: goodConfig.Name,
+					RevisionName:      goodNewRev.Name,
+					Percent:           ptr.Int64(0),
+					LatestRevision:    ptr.Bool(true),
+					Tag:               "robert",
+				},
+				Protocol: net.ProtocolH2C,
+			}},
+			"robert": {{
+				TrafficTarget: v1.TrafficTarget{
+					ConfigurationName: goodConfig.Name,
+					RevisionName:      goodNewRev.Name,
+					Percent:           ptr.Int64(100),
+					Tag:               "robert",
+					LatestRevision:    ptr.Bool(true),
+				},
+				Protocol: net.ProtocolH2C,
+			}},
+		},
+		revisionTargets: []RevisionTarget{{
+			TrafficTarget: v1.TrafficTarget{
+				ConfigurationName: niceConfig.Name,
+				RevisionName:      niceNewRev.Name,
+				Percent:           ptr.Int64(100),
+				LatestRevision:    ptr.Bool(true),
+			},
+			Protocol: net.ProtocolH2C,
+		}, {
+			TrafficTarget: v1.TrafficTarget{
+				ConfigurationName: goodConfig.Name,
+				RevisionName:      goodNewRev.Name,
+				Percent:           ptr.Int64(0),
+				LatestRevision:    ptr.Bool(true),
+				Tag:               "robert",
+			},
+			Protocol: net.ProtocolH2C,
+		}},
+		Configurations: map[string]*v1.Configuration{
+			niceConfig.Name: niceConfig,
+			goodConfig.Name: goodConfig,
+		},
+		Revisions: map[string]*v1.Revision{
+			niceNewRev.Name: niceNewRev,
+			goodNewRev.Name: goodNewRev,
+		},
+	}
+	tc, err := BuildTrafficConfiguration(configLister, revLister, testRouteWithTrafficTargets(WithSpecTraffic(v1.TrafficTarget{
+		ConfigurationName: niceConfig.Name,
+		Percent:           ptr.Int64(100),
+	}, v1.TrafficTarget{
+		ConfigurationName: goodConfig.Name,
+		Percent:           ptr.Int64(0),
+		Tag:               "robert",
+	})))
+	if err != nil {
+		t.Fatal("Unexpected error", err)
+	}
+	if got, want := tc, expected; !cmp.Equal(want, got, cmpOpts...) {
+		fmt.Println(spew.Sdump(got))
+		t.Fatalf("Unexpected traffic diff (-want +got):\n%s", cmp.Diff(want, got, cmpOpts...))
+	}
+
+	gotR := tc.BuildRollout()
+	wantR := &Rollout{
+		Configurations: []ConfigurationRollout{{
+			ConfigurationName: niceConfig.Name,
+			Percent:           100,
+			Revisions: []RevisionRollout{{
+				RevisionName: niceNewRev.Name,
+				Percent:      100,
+			}},
+		}, {
+			ConfigurationName: goodConfig.Name,
+			Tag:               "robert",
+			Percent:           100,
+			Revisions: []RevisionRollout{{
+				RevisionName: goodNewRev.Name,
+				Percent:      100,
+			}},
+		}},
+	}
+	if !cmp.Equal(gotR, wantR) {
+		t.Errorf("Rollout mismatch, diff(-want,+got):\n%s", cmp.Diff(wantR, gotR))
+	}
+}
+
 func TestMain(m *testing.M) {
 	setUp()
 	os.Exit(m.Run())
@@ -1093,9 +1698,6 @@ func testNetworkConfig() *config.Config {
 			DefaultIngressClass: "test-ingress-class",
 			DomainTemplate:      network.DefaultDomainTemplate,
 			TagTemplate:         network.DefaultTagTemplate,
-		},
-		GC: &gc.Config{
-			StaleRevisionLastpinnedDebounce: 1 * time.Minute,
 		},
 	}
 }

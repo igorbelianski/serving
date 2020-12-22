@@ -58,8 +58,8 @@ func (r *Revision) Validate(ctx context.Context) *apis.FieldError {
 // Validate implements apis.Validatable
 func (rts *RevisionTemplateSpec) Validate(ctx context.Context) *apis.FieldError {
 	errs := rts.Spec.Validate(apis.WithinSpec(ctx)).ViaField("spec")
-	allowZeroInitialScale := apisconfig.FromContextOrDefaults(ctx).Autoscaler.AllowZeroInitialScale
-	errs = errs.Also(autoscaling.ValidateAnnotations(allowZeroInitialScale, rts.GetAnnotations()).ViaField("metadata.annotations"))
+	errs = errs.Also(autoscaling.ValidateAnnotations(ctx, apisconfig.FromContextOrDefaults(ctx).Autoscaler,
+		rts.GetAnnotations()).ViaField("metadata.annotations"))
 
 	// If the RevisionTemplateSpec has a name specified, then check that
 	// it follows the requirements on the name.
@@ -70,23 +70,25 @@ func (rts *RevisionTemplateSpec) Validate(ctx context.Context) *apis.FieldError 
 
 // VerifyNameChange checks that if a user brought their own name previously that it
 // changes at the appropriate times.
-func (current *RevisionTemplateSpec) VerifyNameChange(ctx context.Context, og RevisionTemplateSpec) *apis.FieldError {
-	if current.Name == "" {
+func (rts *RevisionTemplateSpec) VerifyNameChange(_ context.Context, og *RevisionTemplateSpec) *apis.FieldError {
+	if rts.Name == "" {
 		// We only check that Name changes when the RevisionTemplate changes.
 		return nil
 	}
-	if current.Name != og.Name {
+	if rts.Name != og.Name {
 		// The name changed, so we're good.
 		return nil
 	}
 
-	if diff, err := kmp.ShortDiff(&og, current); err != nil {
+	diff, err := kmp.ShortDiff(og, rts)
+	if err != nil {
 		return &apis.FieldError{
 			Message: "Failed to diff RevisionTemplate",
 			Paths:   []string{apis.CurrentField},
 			Details: err.Error(),
 		}
-	} else if diff != "" {
+	}
+	if diff != "" {
 		return &apis.FieldError{
 			Message: "Saw the following changes without a name change (-old +new)",
 			Paths:   []string{"metadata.name"},
@@ -112,7 +114,7 @@ func (rs *RevisionSpec) Validate(ctx context.Context) *apis.FieldError {
 }
 
 // Validate implements apis.Validatable
-func (rs *RevisionStatus) Validate(ctx context.Context) *apis.FieldError {
+func (rs *RevisionStatus) Validate(_ context.Context) *apis.FieldError {
 	return nil
 }
 

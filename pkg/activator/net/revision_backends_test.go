@@ -30,7 +30,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
 
-	"knative.dev/networking/pkg/apis/networking"
+	pkgnet "knative.dev/networking/pkg/apis/networking"
 	fakekubeclient "knative.dev/pkg/client/injection/kube/client/fake"
 	fakeendpointsinformer "knative.dev/pkg/client/injection/kube/informers/core/v1/endpoints/fake"
 	fakeserviceinformer "knative.dev/pkg/client/injection/kube/informers/core/v1/service/fake"
@@ -43,6 +43,7 @@ import (
 	v1 "knative.dev/serving/pkg/apis/serving/v1"
 	fakeservingclient "knative.dev/serving/pkg/client/injection/client/fake"
 	fakerevisioninformer "knative.dev/serving/pkg/client/injection/informers/serving/v1/revision/fake"
+	"knative.dev/serving/pkg/networking"
 	"knative.dev/serving/pkg/queue"
 
 	. "knative.dev/pkg/logging/testing"
@@ -57,11 +58,11 @@ const (
 )
 
 // revisionCC1 - creates a revision with concurrency == 1.
-func revisionCC1(revID types.NamespacedName, protocol networking.ProtocolType) *v1.Revision {
+func revisionCC1(revID types.NamespacedName, protocol pkgnet.ProtocolType) *v1.Revision {
 	return revision(revID, protocol, 1)
 }
 
-func revision(revID types.NamespacedName, protocol networking.ProtocolType, cc int64) *v1.Revision {
+func revision(revID types.NamespacedName, protocol pkgnet.ProtocolType, cc int64) *v1.Revision {
 	return &v1.Revision{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: revID.Namespace,
@@ -97,7 +98,7 @@ func privateSKSService(revID types.NamespacedName, clusterIP string, ports []cor
 	}
 }
 
-func waitForRevisionBackedMananger(t *testing.T, rbm *revisionBackendsManager) {
+func waitForRevisionBackendManager(t *testing.T, rbm *revisionBackendsManager) {
 	timeout := time.After(updateTimeout)
 	for {
 		select {
@@ -118,7 +119,7 @@ func TestRevisionWatcher(t *testing.T) {
 	for _, tc := range []struct {
 		name                  string
 		dests                 dests
-		protocol              networking.ProtocolType
+		protocol              pkgnet.ProtocolType
 		clusterPort           corev1.ServicePort
 		clusterIP             string
 		expectUpdates         []revisionDestsUpdate
@@ -158,7 +159,7 @@ func TestRevisionWatcher(t *testing.T) {
 	}, {
 		name:     "single http2 podIP",
 		dests:    dests{ready: sets.NewString("128.0.0.1:1234")},
-		protocol: networking.ProtocolH2C,
+		protocol: pkgnet.ProtocolH2C,
 		clusterPort: corev1.ServicePort{
 			Name: "http2",
 			Port: 1234,
@@ -177,7 +178,7 @@ func TestRevisionWatcher(t *testing.T) {
 	}, {
 		name:     "single http2 clusterIP",
 		dests:    dests{ready: sets.NewString("128.0.0.1:1234"), notReady: sets.NewString("128.0.0.2:1234")},
-		protocol: networking.ProtocolH2C,
+		protocol: pkgnet.ProtocolH2C,
 		clusterPort: corev1.ServicePort{
 			Name: "http2",
 			Port: 1234,
@@ -389,9 +390,9 @@ func TestRevisionWatcher(t *testing.T) {
 			// This gets closed up by revisionWatcher
 			destsCh := make(chan dests)
 
-			// Default for protocol is http1
+			// Default for protocol is HTTP1
 			if tc.protocol == "" {
-				tc.protocol = networking.ProtocolHTTP1
+				tc.protocol = pkgnet.ProtocolHTTP1
 			}
 
 			fake := fakekubeclient.Get(ctx)
@@ -460,7 +461,7 @@ func TestRevisionWatcher(t *testing.T) {
 			}
 
 			if got, want := updates, tc.expectUpdates; !cmp.Equal(got, want, cmpopts.EquateEmpty()) {
-				t.Errorf("revisionDests updates = %v, want: %v, diff (-want, +got):\n %s", got, want, cmp.Diff(want, got))
+				t.Errorf("revisionDests updates = %v, want: %v, diff(-want, +got):\n%s", got, want, cmp.Diff(want, got))
 			}
 		})
 	}
@@ -528,7 +529,7 @@ func TestRevisionBackendManagerAddEndpoint(t *testing.T) {
 		name:         "add slow healthy",
 		endpointsArr: []*corev1.Endpoints{ep(testRevision, 1234, "http", "128.0.0.1")},
 		revisions: []*v1.Revision{
-			revisionCC1(types.NamespacedName{Namespace: testNamespace, Name: testRevision}, networking.ProtocolHTTP1),
+			revisionCC1(types.NamespacedName{Namespace: testNamespace, Name: testRevision}, pkgnet.ProtocolHTTP1),
 		},
 		services: []*corev1.Service{
 			privateSKSService(types.NamespacedName{Namespace: testNamespace, Name: testRevision}, "129.0.0.1",
@@ -556,7 +557,7 @@ func TestRevisionBackendManagerAddEndpoint(t *testing.T) {
 		name:         "add slow ready http2",
 		endpointsArr: []*corev1.Endpoints{ep(testRevision, 1234, "http2", "128.0.0.1")},
 		revisions: []*v1.Revision{
-			revisionCC1(types.NamespacedName{Namespace: testNamespace, Name: testRevision}, networking.ProtocolH2C),
+			revisionCC1(types.NamespacedName{Namespace: testNamespace, Name: testRevision}, pkgnet.ProtocolH2C),
 		},
 		services: []*corev1.Service{
 			privateSKSService(types.NamespacedName{Namespace: testNamespace, Name: testRevision}, "129.0.0.1",
@@ -587,8 +588,8 @@ func TestRevisionBackendManagerAddEndpoint(t *testing.T) {
 			ep("test-revision2", 1235, "http", "128.1.0.2"),
 		},
 		revisions: []*v1.Revision{
-			revisionCC1(types.NamespacedName{Namespace: testNamespace, Name: "test-revision1"}, networking.ProtocolHTTP1),
-			revisionCC1(types.NamespacedName{Namespace: testNamespace, Name: "test-revision2"}, networking.ProtocolHTTP1),
+			revisionCC1(types.NamespacedName{Namespace: testNamespace, Name: "test-revision1"}, pkgnet.ProtocolHTTP1),
+			revisionCC1(types.NamespacedName{Namespace: testNamespace, Name: "test-revision2"}, pkgnet.ProtocolHTTP1),
 		},
 		services: []*corev1.Service{
 			privateSKSService(types.NamespacedName{Namespace: testNamespace, Name: "test-revision1"}, "129.0.0.1",
@@ -613,7 +614,7 @@ func TestRevisionBackendManagerAddEndpoint(t *testing.T) {
 		name:         "no pod addressability",
 		endpointsArr: []*corev1.Endpoints{ep(testRevision, 1234, "http", "128.0.0.1")},
 		revisions: []*v1.Revision{
-			revisionCC1(types.NamespacedName{Namespace: testNamespace, Name: testRevision}, networking.ProtocolHTTP1),
+			revisionCC1(types.NamespacedName{Namespace: testNamespace, Name: testRevision}, pkgnet.ProtocolHTTP1),
 		},
 		services: []*corev1.Service{
 			privateSKSService(types.NamespacedName{Namespace: testNamespace, Name: testRevision}, "129.0.0.1",
@@ -639,7 +640,7 @@ func TestRevisionBackendManagerAddEndpoint(t *testing.T) {
 		name:         "unhealthy",
 		endpointsArr: []*corev1.Endpoints{ep(testRevision, 1234, "http", "128.0.0.1")},
 		revisions: []*v1.Revision{
-			revisionCC1(types.NamespacedName{Namespace: testNamespace, Name: testRevision}, networking.ProtocolHTTP1),
+			revisionCC1(types.NamespacedName{Namespace: testNamespace, Name: testRevision}, pkgnet.ProtocolHTTP1),
 		},
 		services: []*corev1.Service{
 			privateSKSService(types.NamespacedName{Namespace: testNamespace, Name: testRevision}, "129.0.0.1",
@@ -659,7 +660,7 @@ func TestRevisionBackendManagerAddEndpoint(t *testing.T) {
 		name:         "unready pod successfully probed",
 		endpointsArr: []*corev1.Endpoints{epNotReady(testRevision, 1234, "http", nil, []string{"128.0.0.1"})},
 		revisions: []*v1.Revision{
-			revisionCC1(types.NamespacedName{Namespace: testNamespace, Name: testRevision}, networking.ProtocolHTTP1),
+			revisionCC1(types.NamespacedName{Namespace: testNamespace, Name: testRevision}, pkgnet.ProtocolHTTP1),
 		},
 		services: []*corev1.Service{
 			privateSKSService(types.NamespacedName{Namespace: testNamespace, Name: testRevision}, "129.0.0.1",
@@ -714,7 +715,7 @@ func TestRevisionBackendManagerAddEndpoint(t *testing.T) {
 			defer func() {
 				cancel()
 				waitInformers()
-				waitForRevisionBackedMananger(t, rbm)
+				waitForRevisionBackendManager(t, rbm)
 			}()
 
 			for _, ep := range tc.endpointsArr {
@@ -1162,7 +1163,7 @@ func TestRevisionDeleted(t *testing.T) {
 		t.Fatal("Failed to start informers:", err)
 	}
 
-	rev := revisionCC1(types.NamespacedName{Namespace: testNamespace, Name: testRevision}, networking.ProtocolHTTP1)
+	rev := revisionCC1(types.NamespacedName{Namespace: testNamespace, Name: testRevision}, pkgnet.ProtocolHTTP1)
 	fakeservingclient.Get(ctx).ServingV1().Revisions(testNamespace).Create(ctx, rev, metav1.CreateOptions{})
 	ri := fakerevisioninformer.Get(ctx)
 	ri.Informer().GetIndexer().Add(rev)
@@ -1172,7 +1173,7 @@ func TestRevisionDeleted(t *testing.T) {
 	defer func() {
 		cancel()
 		waitInformers()
-		waitForRevisionBackedMananger(t, rbm)
+		waitForRevisionBackendManager(t, rbm)
 	}()
 
 	// Make some movements.
@@ -1204,7 +1205,7 @@ func TestServiceDoesNotExist(t *testing.T) {
 		t.Fatal("Failed to start informers:", err)
 	}
 
-	rev := revisionCC1(types.NamespacedName{Namespace: testNamespace, Name: testRevision}, networking.ProtocolHTTP1)
+	rev := revisionCC1(types.NamespacedName{Namespace: testNamespace, Name: testRevision}, pkgnet.ProtocolHTTP1)
 	fakeservingclient.Get(ctx).ServingV1().Revisions(testNamespace).Create(ctx, rev, metav1.CreateOptions{})
 	ri := fakerevisioninformer.Get(ctx)
 	ri.Informer().GetIndexer().Add(rev)
@@ -1228,7 +1229,7 @@ func TestServiceDoesNotExist(t *testing.T) {
 	defer func() {
 		cancel()
 		waitInformers()
-		waitForRevisionBackedMananger(t, rbm)
+		waitForRevisionBackendManager(t, rbm)
 	}()
 
 	// Make some movements to generate a checkDests call.
@@ -1238,7 +1239,7 @@ func TestServiceDoesNotExist(t *testing.T) {
 		// We can't probe endpoints (see RT above) and we can't get to probe
 		// cluster IP. But if the service is accessible then we will and probing will
 		// succeed since RT has no rules for that.
-		t.Errorf("Unexpected update, should have had none: %v", x)
+		t.Error("Unexpected update, should have had none:", x)
 	case <-time.After(updateTimeout):
 	}
 }
@@ -1254,7 +1255,7 @@ func TestServiceMoreThanOne(t *testing.T) {
 	if err != nil {
 		t.Fatal("Failed to start informers:", err)
 	}
-	rev := revisionCC1(types.NamespacedName{Namespace: testNamespace, Name: testRevision}, networking.ProtocolHTTP1)
+	rev := revisionCC1(types.NamespacedName{Namespace: testNamespace, Name: testRevision}, pkgnet.ProtocolHTTP1)
 	fakeservingclient.Get(ctx).ServingV1().Revisions(testNamespace).Create(ctx, rev, metav1.CreateOptions{})
 	ri := fakerevisioninformer.Get(ctx)
 	ri.Informer().GetIndexer().Add(rev)
@@ -1292,7 +1293,7 @@ func TestServiceMoreThanOne(t *testing.T) {
 	defer func() {
 		cancel()
 		waitInformers()
-		waitForRevisionBackedMananger(t, rbm)
+		waitForRevisionBackendManager(t, rbm)
 	}()
 
 	ei.Informer().GetIndexer().Add(eps)

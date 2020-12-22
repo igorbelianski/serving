@@ -1,5 +1,5 @@
 /*
-Copyright 2018 The Knative Authors.
+Copyright 2018 The Knative Authors
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -37,7 +37,6 @@ import (
 	"knative.dev/pkg/controller"
 	"knative.dev/pkg/logging"
 	"knative.dev/pkg/ptr"
-	cfgmap "knative.dev/serving/pkg/apis/config"
 	v1 "knative.dev/serving/pkg/apis/serving/v1"
 	servingclient "knative.dev/serving/pkg/client/injection/client/fake"
 	configreconciler "knative.dev/serving/pkg/client/injection/reconciler/serving/v1/configuration"
@@ -66,18 +65,6 @@ func TestReconcile(t *testing.T) {
 	testClock = clock.NewFakeClock(time.Now())
 	testCtx = context.Background()
 
-	test(t)
-}
-
-func TestReconcileNewGCEnabled(t *testing.T) {
-	testClock = clock.NewFakeClock(time.Now())
-
-	c := &config.Config{
-		Features: &cfgmap.Features{
-			ResponsiveRevisionGC: cfgmap.Enabled,
-		},
-	}
-	testCtx = config.ToContext(context.Background(), c)
 	test(t)
 }
 
@@ -120,15 +107,15 @@ func test(t *testing.T) {
 			Object: cfg("no-revisions-yet", "foo", 1234,
 				// The following properties are set when we first reconcile a
 				// Configuration and a Revision is created.
-				WithLatestCreated("no-revisions-yet-00001"), WithConfigObservedGen),
+				WithLatestCreated("no-revisions-yet-01234"), WithConfigObservedGen),
 		}, {
 			Object: cfg("no-revisions-yet", "foo", 1234,
 				// The following properties are set when we first reconcile a
 				// Configuration and a Revision is created.
-				WithLatestCreated("no-revisions-yet-00001"), WithConfigObservedGen),
+				WithLatestCreated("no-revisions-yet-01234"), WithConfigObservedGen),
 		}},
 		WantEvents: []string{
-			Eventf(corev1.EventTypeNormal, "Created", "Created Revision %q", "no-revisions-yet-00001"),
+			Eventf(corev1.EventTypeNormal, "Created", "Created Revision %q", "no-revisions-yet-01234"),
 		},
 		Key: "foo/no-revisions-yet",
 	}, {
@@ -388,10 +375,10 @@ func test(t *testing.T) {
 				// These would be the status updates after a first
 				// reconcile, which we use to trigger the update
 				// where we've induced a failure.
-				WithLatestCreated("update-config-failure-00001"), WithConfigObservedGen),
+				WithLatestCreated("update-config-failure-01234"), WithConfigObservedGen),
 		}},
 		WantEvents: []string{
-			Eventf(corev1.EventTypeNormal, "Created", "Created Revision %q", "update-config-failure-00001"),
+			Eventf(corev1.EventTypeNormal, "Created", "Created Revision %q", "update-config-failure-01234"),
 			Eventf(corev1.EventTypeWarning, "UpdateFailed", `Failed to update status for "update-config-failure": inducing failure for update configurations`),
 		},
 		Key: "foo/update-config-failure",
@@ -580,7 +567,7 @@ func cfg(name, namespace string, generation int64, co ...ConfigOption) *v1.Confi
 
 func rev(name, namespace string, generation int64, ro ...RevisionOption) *v1.Revision {
 	r := resources.MakeRevision(testCtx, cfg(name, namespace, generation), testClock)
-	r.SetDefaults(v1.WithUpgradeViaDefaulting(context.Background()))
+	r.SetDefaults(context.Background())
 	for _, opt := range ro {
 		opt(r)
 	}

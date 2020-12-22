@@ -42,7 +42,7 @@ type backgroundResolver struct {
 	resolver imageResolver
 	enqueue  func(types.NamespacedName)
 
-	queue workqueue.Interface
+	queue workqueue.RateLimitingInterface
 
 	mu      sync.Mutex
 	results map[types.NamespacedName]*resolveResult
@@ -82,7 +82,9 @@ func newBackgroundResolver(logger *zap.SugaredLogger, resolver imageResolver, en
 		enqueue:  enqueue,
 
 		results: make(map[types.NamespacedName]*resolveResult),
-		queue:   workqueue.NewNamed("digests"),
+		queue: workqueue.NewNamedRateLimitingQueue(
+			workqueue.DefaultControllerRateLimiter(),
+			"digests"),
 	}
 
 	return r
@@ -192,7 +194,13 @@ func (r *backgroundResolver) addWorkItems(rev *v1.Revision, name types.Namespace
 // in the resolveResult. If this completes the work for the revision, the
 // completionCallback is called.
 func (r *backgroundResolver) processWorkItem(item *workItem) {
-	defer r.queue.Done(item)
+	defer func() {
+		// NOTE: right now we do not retry failing items, but if we were
+		// `Forget` should be called only in case of a success
+		// (or if we abandon the item).
+		r.queue.Forget(item)
+		r.queue.Done(item)
+	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), item.timeout)
 	defer cancel()
@@ -213,7 +221,7 @@ func (r *backgroundResolver) processWorkItem(item *workItem) {
 
 	if resolveErr != nil {
 		item.result.statuses = nil
-		item.result.err = containerMissingError{image: item.image, cause: resolveErr}
+		item.result.err = fmt.Errorf("%s: %w", v1.RevisionContainerMissingMessage(item.image, "failed to resolve image to digest"), resolveErr)
 		item.result.completionCallback()
 		return
 	}
@@ -244,19 +252,4 @@ func (r *backgroundResolver) Clear(name types.NamespacedName) {
 
 func (r *resolveResult) ready() bool {
 	return r.remaining == 0 || r.err != nil
-}
-
-// containerMissingError converts an error in to the expected format for the
-// RevisionContainerMissing condition.
-type containerMissingError struct {
-	image string
-	cause error
-}
-
-func (e containerMissingError) Error() string {
-	return v1.RevisionContainerMissingMessage(e.image, fmt.Sprintf("failed to resolve image to digest: %v", e.cause))
-}
-
-func (e containerMissingError) Unwrap() error {
-	return e.cause
 }

@@ -18,6 +18,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"net"
@@ -25,20 +26,17 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"os"
-	"path/filepath"
 	"strconv"
 	"time"
 
 	"github.com/kelseyhightower/envconfig"
 	"go.opencensus.io/plugin/ochttp"
-	"go.opencensus.io/stats/view"
-	"go.opencensus.io/trace"
+	"go.uber.org/automaxprocs/maxprocs"
 	"go.uber.org/zap"
 
 	"k8s.io/apimachinery/pkg/types"
 
 	network "knative.dev/networking/pkg"
-	"knative.dev/networking/pkg/apis/networking"
 	pkglogging "knative.dev/pkg/logging"
 	"knative.dev/pkg/logging/logkey"
 	"knative.dev/pkg/metrics"
@@ -48,32 +46,32 @@ import (
 	"knative.dev/pkg/tracing"
 	tracingconfig "knative.dev/pkg/tracing/config"
 	"knative.dev/pkg/tracing/propagation/tracecontextb3"
-	"knative.dev/serving/pkg/activator"
 	activatorutil "knative.dev/serving/pkg/activator/util"
 	pkghttp "knative.dev/serving/pkg/http"
 	"knative.dev/serving/pkg/http/handler"
 	"knative.dev/serving/pkg/logging"
+	"knative.dev/serving/pkg/networking"
 	"knative.dev/serving/pkg/queue"
 	"knative.dev/serving/pkg/queue/health"
 	"knative.dev/serving/pkg/queue/readiness"
 )
 
 const (
-	badProbeTemplate = "unexpected probe header value: %s"
-
 	// reportingPeriod is the interval of time between reporting stats by queue proxy.
 	reportingPeriod = 1 * time.Second
 )
 
 var (
 	readinessProbeTimeout = flag.Duration("probe-period", -1, "run readiness probe with given timeout")
-	unixSocketPath        = filepath.Join(os.TempDir(), "queue.sock")
+
+	// This creates an abstract socket instead of an actual file.
+	unixSocketPath = "@/knative.dev/serving/queue.sock"
 )
 
 type config struct {
 	ContainerConcurrency   int    `split_words:"true" required:"true"`
-	QueueServingPort       int    `split_words:"true" required:"true"`
-	UserPort               int    `split_words:"true" required:"true"`
+	QueueServingPort       string `split_words:"true" required:"true"`
+	UserPort               string `split_words:"true" required:"true"`
 	RevisionTimeoutSeconds int    `split_words:"true" required:"true"`
 	ServingReadinessProbe  string `split_words:"true" required:"true"`
 	EnableProfiling        bool   `split_words:"true"` // optional
@@ -103,111 +101,27 @@ type config struct {
 	TracingConfigStackdriverProjectID string                    `split_words:"true"` // optional
 }
 
-// Make handler a closure for testing.
-func proxyHandler(breaker *queue.Breaker, stats *network.RequestStats, tracingEnabled bool, next http.Handler) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if network.IsKubeletProbe(r) {
-			next.ServeHTTP(w, r)
-			return
-		}
-
-		if tracingEnabled {
-			proxyCtx, proxySpan := trace.StartSpan(r.Context(), "queue_proxy")
-			r = r.WithContext(proxyCtx)
-			defer proxySpan.End()
-		}
-
-		// Metrics for autoscaling.
-		in, out := network.ReqIn, network.ReqOut
-		if activator.Name == network.KnativeProxyHeader(r) {
-			in, out = network.ProxiedIn, network.ProxiedOut
-		}
-		stats.HandleEvent(network.ReqEvent{Time: time.Now(), Type: in})
-		defer func() {
-			stats.HandleEvent(network.ReqEvent{Time: time.Now(), Type: out})
-		}()
-		network.RewriteHostOut(r)
-
-		// Enforce queuing and concurrency limits.
-		if breaker != nil {
-			var waitSpan *trace.Span
-			if tracingEnabled {
-				_, waitSpan = trace.StartSpan(r.Context(), "queue_wait")
-			}
-			if err := breaker.Maybe(r.Context(), func() {
-				waitSpan.End()
-				next.ServeHTTP(w, r)
-			}); err != nil {
-				waitSpan.End()
-				switch err {
-				case context.DeadlineExceeded, queue.ErrRequestQueueFull:
-					http.Error(w, err.Error(), http.StatusServiceUnavailable)
-				default:
-					w.WriteHeader(http.StatusInternalServerError)
-				}
-			}
-		} else {
-			next.ServeHTTP(w, r)
-		}
-	}
-}
-
-func knativeProbeHandler(logger *zap.SugaredLogger, healthState *health.State, prober func() bool, isAggressive bool, tracingEnabled bool, next http.Handler) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		ph := network.KnativeProbeHeader(r)
-
-		if ph == "" {
-			next.ServeHTTP(w, r)
-			return
-		}
-
-		var probeSpan *trace.Span
-		if tracingEnabled {
-			_, probeSpan = trace.StartSpan(r.Context(), "probe")
-			defer probeSpan.End()
-		}
-
-		if ph != queue.Name {
-			http.Error(w, fmt.Sprintf(badProbeTemplate, ph), http.StatusBadRequest)
-			probeSpan.Annotate([]trace.Attribute{
-				trace.StringAttribute("queueproxy.probe.error", fmt.Sprintf(badProbeTemplate, ph))}, "error")
-			return
-		}
-
-		if prober == nil {
-			http.Error(w, "no probe", http.StatusInternalServerError)
-			probeSpan.Annotate([]trace.Attribute{
-				trace.StringAttribute("queueproxy.probe.error", "no probe")}, "error")
-			return
-		}
-
-		healthState.HandleHealthProbe(func() bool {
-			if !prober() {
-				probeSpan.Annotate([]trace.Attribute{
-					trace.StringAttribute("queueproxy.probe.error", "container not ready")}, "error")
-				return false
-			}
-			return true
-		}, isAggressive, w)
-	}
+func init() {
+	maxprocs.Set()
 }
 
 func main() {
 	flag.Parse()
-	ctx := signals.NewContext()
 
 	// If this is set, we run as a standalone binary to probe the queue-proxy.
 	if *readinessProbeTimeout >= 0 {
 		// Use a unix socket rather than TCP to avoid going via entire TCP stack
 		// when we're actually in the same container.
-		transport := &http.Transport{
-			DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
-				return net.Dial("unix", unixSocketPath)
-			},
+		transport := http.DefaultTransport.(*http.Transport).Clone()
+		transport.DialContext = func(_ context.Context, _, _ string) (net.Conn, error) {
+			return net.Dial("unix", unixSocketPath)
 		}
 
 		os.Exit(standaloneProbeMain(*readinessProbeTimeout, transport))
 	}
+
+	// Otherwise, we run as the queue-proxy service.
+	ctx := signals.NewContext()
 
 	// Parse the environment.
 	var env config
@@ -218,22 +132,17 @@ func main() {
 
 	// Setup the logger.
 	logger, _ := pkglogging.NewLogger(env.ServingLoggingConfig, env.ServingLoggingLevel)
-	logger = logger.Named("queueproxy")
 	defer flush(logger)
 
-	logger = logger.With(
-		zap.Object(logkey.Key, pkglogging.NamespacedName(types.NamespacedName{
+	logger = logger.Named("queueproxy").With(
+		zap.String(logkey.Key, types.NamespacedName{
 			Namespace: env.ServingNamespace,
 			Name:      env.ServingRevision,
-		})),
+		}.String()),
 		zap.String(logkey.Pod, env.ServingPod))
 
 	// Report stats on Go memory usage every 30 seconds.
-	msp := metrics.NewMemStatsAll()
-	msp.Start(context.Background(), 30*time.Second)
-	if err := view.Register(msp.DefaultViews()...); err != nil {
-		logger.Fatalw("Error exporting go memstats view", zap.Error(err))
-	}
+	metrics.MemStatsOrDie(ctx)
 
 	// Setup reporters and processes to handle stat reporting.
 	promStatReporter, err := queue.NewPrometheusStatsReporter(
@@ -261,36 +170,34 @@ func main() {
 	probe := buildProbe(logger, env.ServingReadinessProbe)
 	healthState := &health.State{}
 
-	server := buildServer(ctx, env, healthState, probe, stats, logger)
-	adminServer := buildAdminServer(logger, healthState)
-	metricsServer := buildMetricsServer(promStatReporter, protoStatReporter)
-
+	mainServer := buildServer(ctx, env, healthState, probe, stats, logger)
 	servers := map[string]*http.Server{
-		"main":    server,
-		"admin":   adminServer,
-		"metrics": metricsServer,
+		"main":    mainServer,
+		"admin":   buildAdminServer(logger, healthState),
+		"metrics": buildMetricsServer(promStatReporter, protoStatReporter),
 	}
-
 	if env.EnableProfiling {
 		servers["profile"] = profiling.NewServer(profiling.NewHandler(logger, true))
 	}
 
-	errCh := make(chan error, len(servers)+1)
-	listeners := make(map[string]net.Listener, len(servers))
-	for name, server := range servers {
-		l, err := net.Listen("tcp", server.Addr)
-		if err != nil {
-			logger.Fatalw("listen failed", zap.Error(err))
-		}
-
-		listeners[name] = l
-	}
-
+	errCh := make(chan error)
+	listenCh := make(chan struct{})
 	for name, server := range servers {
 		go func(name string, s *http.Server) {
+			l, err := net.Listen("tcp", s.Addr)
+			if err != nil {
+				errCh <- fmt.Errorf("%s server failed to listen: %w", name, err)
+				return
+			}
+
+			// Notify the unix socket setup that the tcp socket for the main server is ready.
+			if s == mainServer {
+				close(listenCh)
+			}
+
 			// Don't forward ErrServerClosed as that indicates we're already shutting down.
-			if err := s.Serve(listeners[name]); err != nil && err != http.ErrServerClosed {
-				errCh <- fmt.Errorf("%s server failed: %w", name, err)
+			if err := s.Serve(l); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				errCh <- fmt.Errorf("%s server failed to serve: %w", name, err)
 			}
 		}(name, server)
 	}
@@ -298,13 +205,19 @@ func main() {
 	// Listen on a unix socket so that the exec probe can avoid having to go
 	// through the full tcp network stack.
 	go func() {
+		// Only start listening on the unix socket once the tcp socket for the
+		// main server is setup.
+		// This avoids the unix socket path succeeding before the tcp socket path
+		// is actually working and thus it avoids a race.
+		<-listenCh
+
 		l, err := net.Listen("unix", unixSocketPath)
 		if err != nil {
-			errCh <- err
+			errCh <- fmt.Errorf("failed to listen to unix socket: %w", err)
 			return
 		}
-		if err := http.Serve(l, server.Handler); err != nil {
-			errCh <- err
+		if err := http.Serve(l, mainServer.Handler); err != nil {
+			errCh <- fmt.Errorf("serving failed on unix socket: %w", err)
 		}
 	}()
 
@@ -326,7 +239,7 @@ func main() {
 			// Calling server.Shutdown() allows pending requests to
 			// complete, while no new work is accepted.
 			logger.Info("Shutting down main server")
-			if err := server.Shutdown(context.Background()); err != nil {
+			if err := mainServer.Shutdown(context.Background()); err != nil {
 				logger.Errorw("Failed to shutdown proxy server", zap.Error(err))
 			}
 			// Removing the main server from the shutdown logic as we've already shut it down.
@@ -355,7 +268,7 @@ func buildServer(ctx context.Context, env config, healthState *health.State, rp 
 	logger *zap.SugaredLogger) *http.Server {
 	target := &url.URL{
 		Scheme: "http",
-		Host:   net.JoinHostPort("127.0.0.1", strconv.Itoa(env.UserPort)),
+		Host:   net.JoinHostPort("127.0.0.1", env.UserPort),
 	}
 
 	maxIdleConns := 1000 // TODO: somewhat arbitrary value for CC=0, needs experimental validation.
@@ -381,7 +294,7 @@ func buildServer(ctx context.Context, env config, healthState *health.State, rp 
 	if metricsSupported {
 		composedHandler = requestAppMetricsHandler(logger, composedHandler, breaker, env)
 	}
-	composedHandler = proxyHandler(breaker, stats, tracingEnabled, composedHandler)
+	composedHandler = queue.ProxyHandler(breaker, stats, tracingEnabled, composedHandler)
 	composedHandler = queue.ForwardedShimHandler(composedHandler)
 	composedHandler = handler.NewTimeToFirstByteTimeoutHandler(composedHandler, "request timeout", handler.StaticTimeoutFunc(timeout))
 
@@ -390,13 +303,13 @@ func buildServer(ctx context.Context, env config, healthState *health.State, rp 
 	}
 	composedHandler = tracing.HTTPSpanMiddleware(composedHandler)
 
-	composedHandler = knativeProbeHandler(logger, healthState, rp.ProbeContainer, rp.IsAggressive(), tracingEnabled, composedHandler)
+	composedHandler = health.ProbeHandler(healthState, rp.ProbeContainer, rp.IsAggressive(), tracingEnabled, composedHandler)
 	composedHandler = network.NewProbeHandler(composedHandler)
 	// We might want sometimes capture the probes/healthchecks in the request
 	// logs. Hence we need to have RequestLogHandler to be the first one.
 	composedHandler = pushRequestLogHandler(logger, composedHandler, env)
 
-	return pkgnet.NewServer(":"+strconv.Itoa(env.QueueServingPort), composedHandler)
+	return pkgnet.NewServer(":"+env.QueueServingPort, composedHandler)
 }
 
 func buildTransport(env config, logger *zap.SugaredLogger, maxConns int) http.RoundTripper {
@@ -429,10 +342,13 @@ func buildBreaker(logger *zap.SugaredLogger, env config) *queue.Breaker {
 
 	// We set the queue depth to be equal to the container concurrency * 10 to
 	// allow the autoscaler time to react.
-	queueDepth := env.ContainerConcurrency * 10
-	params := queue.BreakerParams{QueueDepth: queueDepth, MaxConcurrency: env.ContainerConcurrency, InitialCapacity: env.ContainerConcurrency}
-	logger.Infof("Queue container is starting with %#v", params)
-
+	queueDepth := 10 * env.ContainerConcurrency
+	params := queue.BreakerParams{
+		QueueDepth:      queueDepth,
+		MaxConcurrency:  env.ContainerConcurrency,
+		InitialCapacity: env.ContainerConcurrency,
+	}
+	logger.Infof("Queue container is starting with BreakerParams = %#v", params)
 	return queue.NewBreaker(params)
 }
 

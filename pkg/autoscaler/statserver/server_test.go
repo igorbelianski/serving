@@ -17,18 +17,17 @@ limitations under the License.
 package statserver
 
 import (
-	"bytes"
-	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"net/url"
-	"runtime"
 	"testing"
 	"time"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/gorilla/websocket"
+	"go.uber.org/goleak"
 	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
 	network "knative.dev/networking/pkg"
@@ -78,7 +77,7 @@ func TestProbe(t *testing.T) {
 
 	defer server.Shutdown(0)
 	go server.listenAndServe()
-	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("%s/%s", server.listenAddr(), network.ProbePath), nil)
+	req, err := http.NewRequest(http.MethodGet, server.listenAddr()+network.ProbePath, nil)
 	if err != nil {
 		t.Fatal("Error creating request:", err)
 	}
@@ -106,10 +105,6 @@ func TestStatsReceived(t *testing.T) {
 	// protobuf
 	assertReceivedProto(t, both, statSink, statsCh)
 
-	// json encoding
-	assertReceivedJSON(t, msg1, statSink, statsCh)
-	assertReceivedJSON(t, msg2, statSink, statsCh)
-
 	closeSink(t, statSink)
 }
 
@@ -134,8 +129,7 @@ func TestServerShutdown(t *testing.T) {
 	}
 
 	// Check the statistic was not received
-	_, ok := <-statsCh
-	if ok {
+	if _, ok := <-statsCh; ok {
 		t.Fatal("Received statistic after shutdown")
 	}
 
@@ -143,12 +137,12 @@ func TestServerShutdown(t *testing.T) {
 	if _, _, err := statSink.NextReader(); err == nil {
 		t.Fatal("Connection not closed")
 	} else {
-		err, ok := err.(*websocket.CloseError)
-		if !ok {
+		var errClose *websocket.CloseError
+		if !errors.As(err, &errClose) {
 			t.Fatal("CloseError not received")
 		}
-		if err.Code != 1012 {
-			t.Fatalf("CloseError with unexpected close code %d received", err.Code)
+		if errClose.Code != 1012 {
+			t.Fatalf("CloseError with unexpected close code %d received", errClose.Code)
 		}
 	}
 
@@ -167,7 +161,8 @@ func TestServerDoesNotLeakGoroutines(t *testing.T) {
 
 	go server.listenAndServe()
 
-	originalGoroutines := runtime.NumGoroutine()
+	// Check the number of goroutines eventually reduces to the number there were before the connection was created
+	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
 
 	listenAddr := server.listenAddr()
 	statSink := dialOK(t, listenAddr)
@@ -175,18 +170,6 @@ func TestServerDoesNotLeakGoroutines(t *testing.T) {
 	assertReceivedProto(t, both, statSink, statsCh)
 
 	closeSink(t, statSink)
-
-	// Check the number of goroutines eventually reduces to the number there were before the connection was created
-	for i := 1000; i >= 0; i-- {
-		currentGoRoutines := runtime.NumGoroutine()
-		if currentGoRoutines <= originalGoroutines {
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
-		if i == 0 {
-			t.Fatalf("Current number of goroutines %d is not equal to the original number %d", currentGoRoutines, originalGoroutines)
-		}
-	}
 }
 
 func TestServerNotBucketHost(t *testing.T) {
@@ -229,9 +212,8 @@ func TestServerNotOwnerForBucketHost(t *testing.T) {
 
 	go server.listenAndServe()
 
-	_, err := dial(server.listenAddr())
-	if err == nil {
-		t.Error("Want error from Dial but got none")
+	if _, err := dial(server.listenAddr()); err == nil {
+		t.Error("Want an error from Dial but got none")
 	}
 }
 
@@ -254,20 +236,6 @@ func BenchmarkStatServer(b *testing.B) {
 			msgs = append(msgs, msg1)
 		}
 
-		b.Run(fmt.Sprintf("json-encoding-%d-msgs", len(msgs)), func(b *testing.B) {
-			for i := 0; i < b.N; i++ {
-				for _, msg := range msgs {
-					if err := sendJSON(statSink, msg); err != nil {
-						b.Fatal("Expected send to succeed, but got:", err)
-					}
-				}
-
-				for range msgs {
-					<-statsCh
-				}
-			}
-		})
-
 		b.Run(fmt.Sprintf("proto-encoding-%d-msgs", len(msgs)), func(b *testing.B) {
 			for i := 0; i < b.N; i++ {
 				if err := sendProto(statSink, msgs); err != nil {
@@ -279,19 +247,6 @@ func BenchmarkStatServer(b *testing.B) {
 				}
 			}
 		})
-	}
-}
-
-func assertReceivedJSON(t *testing.T, sm metrics.StatMessage, statSink *websocket.Conn, statsCh <-chan metrics.StatMessage) {
-	t.Helper()
-
-	if err := sendJSON(statSink, sm); err != nil {
-		t.Fatal("Expected send to succeed, got:", err)
-	}
-
-	recv := <-statsCh
-	if !cmp.Equal(sm, recv) {
-		t.Fatalf("StatMessage mismatch: diff (-got, +want) %s", cmp.Diff(recv, sm))
 	}
 }
 
@@ -307,7 +262,7 @@ func assertReceivedProto(t *testing.T, sms []metrics.StatMessage, statSink *webs
 		got = append(got, <-statsCh)
 	}
 	if !cmp.Equal(sms, got) {
-		t.Fatalf("StatMessage mismatch: diff (-got, +want) %s", cmp.Diff(got, sms))
+		t.Fatal("StatMessage mismatch: diff (-got, +want)", cmp.Diff(got, sms))
 	}
 }
 
@@ -333,19 +288,6 @@ func dial(serverURL string) (*websocket.Conn, error) {
 	}
 	statSink, _, err := dialer.Dial(u.String(), nil)
 	return statSink, err
-}
-
-func sendJSON(statSink *websocket.Conn, sm metrics.StatMessage) error {
-	var b bytes.Buffer
-	enc := json.NewEncoder(&b)
-	if err := enc.Encode(sm); err != nil {
-		return fmt.Errorf("failed to encode StatMessage: %w", err)
-	}
-
-	if err := statSink.WriteMessage(websocket.TextMessage, b.Bytes()); err != nil {
-		return fmt.Errorf("failed to write to stat sink: %w", err)
-	}
-	return nil
 }
 
 func sendProto(statSink *websocket.Conn, sms []metrics.StatMessage) error {

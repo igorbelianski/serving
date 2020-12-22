@@ -26,6 +26,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 
 	pkgTest "knative.dev/pkg/test"
+	"knative.dev/pkg/test/spoof"
 	rtesting "knative.dev/serving/pkg/testing/v1"
 	"knative.dev/serving/test"
 	"knative.dev/serving/test/e2e"
@@ -33,7 +34,9 @@ import (
 )
 
 const (
-	NumControllerReconcilers = 7 // Keep in sync with ./cmd/controller/main.go
+	// NumControllerReconcilers is the number of controllers run by ./cmd/controller/main.go.
+	// It is exported so the tests from cmd/controller/main.go can ensure we keep it in sync.
+	NumControllerReconcilers = 7
 )
 
 func createPizzaPlanetService(t *testing.T, fopt ...rtesting.ServiceOption) (test.ResourceNames, *v1test.ResourceObjects) {
@@ -64,7 +67,7 @@ func assertServiceEventuallyWorks(t *testing.T, clients *test.Clients, names tes
 		clients.KubeClient,
 		t.Logf,
 		url,
-		v1test.RetryingRouteInconsistency(pkgTest.MatchesAllOf(pkgTest.IsStatusOK, pkgTest.EventuallyMatchesBody(expectedText))),
+		v1test.RetryingRouteInconsistency(spoof.MatchesAllOf(spoof.IsStatusOK, pkgTest.EventuallyMatchesBody(expectedText))),
 		"WaitForEndpointToServeText",
 		test.ServingFlags.ResolvableDomain); err != nil {
 		t.Fatalf("The endpoint for Route %s at %s didn't serve the expected text %q: %v", names.Route, url, expectedText, err)
@@ -72,7 +75,7 @@ func assertServiceEventuallyWorks(t *testing.T, clients *test.Clients, names tes
 }
 
 func waitForEndpointsState(client *pkgTest.KubeClient, svcName, svcNamespace string, inState func(*corev1.Endpoints) (bool, error)) error {
-	endpointsService := client.Kube.CoreV1().Endpoints(svcNamespace)
+	endpointsService := client.CoreV1().Endpoints(svcNamespace)
 
 	return wait.PollImmediate(test.PollInterval, test.PollTimeout, func() (bool, error) {
 		endpoint, err := endpointsService.Get(context.Background(), svcName, metav1.GetOptions{})

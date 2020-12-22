@@ -17,70 +17,69 @@ limitations under the License.
 package resources
 
 import (
+	"sort"
+	"strings"
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
 	corev1 "k8s.io/api/core/v1"
 
-	cfgmap "knative.dev/serving/pkg/apis/config"
 	"knative.dev/serving/pkg/apis/serving"
-	v1 "knative.dev/serving/pkg/apis/serving/v1"
-	"knative.dev/serving/pkg/reconciler/service/resources/names"
 )
 
 func TestConfigurationSpec(t *testing.T) {
 	s := createService()
-	c, _ := MakeConfiguration(s)
+	c := MakeConfiguration(s)
 	if got, want := c.Name, testServiceName; got != want {
-		t.Errorf("expected %q for service name got %q", want, got)
+		t.Errorf("Service name = %q; want: %q", got, want)
 	}
 	if got, want := c.Namespace, testServiceNamespace; got != want {
-		t.Errorf("expected %q for service namespace got %q", want, got)
+		t.Errorf("Service namespace = %q; want: %q", got, want)
 	}
 	if got, want := c.Spec.GetTemplate().Spec.GetContainer().Name, testContainerName; got != want {
-		t.Errorf("expected %q for container name got %q", want, got)
+		t.Errorf("Container name = %q; want: %q", got, want)
 	}
 	expectOwnerReferencesSetCorrectly(t, c.OwnerReferences)
 
-	if got, want := len(c.Labels), 2; got != want {
-		t.Errorf("expected %d labels got %d", want, got)
+	if got, want := c.Labels, map[string]string{serving.ServiceLabelKey: testServiceName}; !cmp.Equal(got, want) {
+		t.Errorf("Labels mismatch: diff(-want,+got):\n%s", cmp.Diff(want, got))
 	}
-	if got, want := c.Labels[serving.ServiceLabelKey], testServiceName; got != want {
-		t.Errorf("expected %q labels got %q", want, got)
+	if got, want := c.Annotations, map[string]string{
+		serving.RoutesAnnotationKey: testServiceName,
+	}; !cmp.Equal(got, want) {
+		t.Errorf("Annotations mismatch: diff(-want,+got):\n%s", cmp.Diff(want, got))
 	}
-}
 
-func TestConfigurationSpecGCAllowed(t *testing.T) {
-	s := createService()
-	c, _ := MakeConfigurationFromExisting(s, &v1.Configuration{}, cfgmap.Allowed)
-	if got, want := c.Name, testServiceName; got != want {
-		t.Errorf("expected %q for service name got %q", want, got)
+	// Create the configuration based on the same existing configuration.
+	c = MakeConfigurationFromExisting(s, c)
+	if got, want := c.Annotations, map[string]string{
+		serving.RoutesAnnotationKey: testServiceName,
+	}; !cmp.Equal(got, want) {
+		t.Errorf("Annotations mismatch: diff(-want,+got):\n%s", cmp.Diff(want, got))
 	}
-	if got, want := c.Namespace, testServiceNamespace; got != want {
-		t.Errorf("expected %q for service namespace got %q", want, got)
-	}
-	if got, want := c.Spec.GetTemplate().Spec.GetContainer().Name, testContainerName; got != want {
-		t.Errorf("expected %q for container name got %q", want, got)
-	}
-	expectOwnerReferencesSetCorrectly(t, c.OwnerReferences)
 
-	if got, want := len(c.Labels), 2; got != want {
-		t.Errorf("expected %d labels got %d", want, got)
-	}
-	if got, want := c.Labels[serving.ServiceLabelKey], testServiceName; got != want {
-		t.Errorf("expected %q labels got %q", want, got)
-	}
-	if got, want := c.Annotations[serving.RoutesAnnotationKey], names.Route(s); got != want {
-		t.Errorf("expected %q route annotation got %q", want, got)
+	// Create the configuration based on the configuration with a different value for the
+	// annotation key serving.RoutesAnnotationKey.
+	const secTestServiceName = "second-test-service"
+	secondConfig := MakeConfigurationFromExisting(
+		createServiceWithName(secTestServiceName), c)
+
+	// MakeConfigurationFromExisting employs maps in process, so order is
+	// not guaranteed.
+	annoValue := secondConfig.Annotations[serving.RoutesAnnotationKey]
+	got := strings.Split(annoValue, ",")
+	sort.Strings(got)
+
+	want := []string{secTestServiceName, testServiceName}
+	if !cmp.Equal(got, want) {
+		t.Errorf("Annotations = %v, want: %v", got, want)
 	}
 }
 
 func TestConfigurationHasNoKubectlAnnotation(t *testing.T) {
 	s := createServiceWithKubectlAnnotation()
-	c, err := MakeConfiguration(s)
-	if err != nil {
-		t.Fatal("Unexpected error:", err)
-	}
+	c := MakeConfiguration(s)
 	if v, ok := c.Annotations[corev1.LastAppliedConfigAnnotation]; ok {
-		t.Errorf("Annotation %s = %q, want empty", corev1.LastAppliedConfigAnnotation, v)
+		t.Errorf(`Annotation[%s] = %q, want: ""`, corev1.LastAppliedConfigAnnotation, v)
 	}
 }

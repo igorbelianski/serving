@@ -1,5 +1,5 @@
 /*
-Copyright 2020 The Knative Authors.
+Copyright 2020 The Knative Authors
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -159,13 +159,10 @@ func isRevisionStale(cfg *gc.Config, rev *v1.Revision, logger *zap.SugaredLogger
 }
 
 // revisionLastActiveTime returns if present:
-// routingStateModified, then lastPinnedTime, then the created time.
+// routingStateModified, then the created time.
 // This is used for sort-ordering by most recently active.
 func revisionLastActiveTime(rev *v1.Revision) time.Time {
 	if t := rev.GetRoutingStateModified(); !t.IsZero() {
-		return t
-	}
-	if t, err := rev.GetLastPinned(); err == nil {
 		return t
 	}
 	return rev.ObjectMeta.GetCreationTimestamp().Time

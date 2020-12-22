@@ -27,6 +27,7 @@ import (
 	"time"
 
 	pkgTest "knative.dev/pkg/test"
+	"knative.dev/pkg/test/spoof"
 	resourcenames "knative.dev/serving/pkg/reconciler/revision/resources/names"
 	"knative.dev/serving/test"
 	"knative.dev/serving/test/conformance/api/shared"
@@ -38,7 +39,7 @@ import (
 // sendRequests send a request to "endpoint", returns error if unexpected response code, nil otherwise.
 func sendRequest(t *testing.T, clients *test.Clients, endpoint *url.URL,
 	initialSleep, sleep time.Duration, expectedResponseCode int) error {
-	client, err := pkgTest.NewSpoofingClient(context.Background(), clients.KubeClient, t.Logf, endpoint.Hostname(), test.ServingFlags.ResolvableDomain, test.AddRootCAtoTransport(context.Background(), t.Logf, clients, test.ServingFlags.Https))
+	client, err := pkgTest.NewSpoofingClient(context.Background(), clients.KubeClient, t.Logf, endpoint.Hostname(), test.ServingFlags.ResolvableDomain, test.AddRootCAtoTransport(context.Background(), t.Logf, clients, test.ServingFlags.HTTPS))
 	if err != nil {
 		return fmt.Errorf("error creating Spoofing client: %w", err)
 	}
@@ -101,6 +102,8 @@ func TestRevisionTimeout(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
 			names := test.ResourceNames{
 				Service: test.ObjectNameForTest(t),
 				Image:   test.Timeout,
@@ -128,16 +131,16 @@ func TestRevisionTimeout(t *testing.T) {
 					clients.KubeClient,
 					t.Logf,
 					serviceURL,
-					v1test.RetryingRouteInconsistency(pkgTest.IsOneOfStatusCodes(http.StatusOK, http.StatusGatewayTimeout)),
+					v1test.RetryingRouteInconsistency(spoof.IsOneOfStatusCodes(http.StatusOK, http.StatusGatewayTimeout)),
 					"WaitForSuccessfulResponse",
 					test.ServingFlags.ResolvableDomain,
-					test.AddRootCAtoTransport(context.Background(), t.Logf, clients, test.ServingFlags.Https)); err != nil {
+					test.AddRootCAtoTransport(context.Background(), t.Logf, clients, test.ServingFlags.HTTPS)); err != nil {
 					t.Fatalf("Error probing %s: %v", serviceURL, err)
 				}
 			}
 
 			if err := sendRequest(t, clients, serviceURL, tc.initialSleep, tc.sleep, tc.expectedStatus); err != nil {
-				t.Errorf("Failed request with intialSleep %v, sleep %v, with revision timeout %ds and expecting status %v: %v",
+				t.Errorf("Failed request with initialSleep %v, sleep %v, with revision timeout %ds and expecting status %v: %v",
 					tc.initialSleep, tc.sleep, tc.timeoutSeconds, tc.expectedStatus, err)
 			}
 		})

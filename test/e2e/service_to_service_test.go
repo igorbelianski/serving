@@ -6,6 +6,7 @@ Copyright 2018 The Knative Authors
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 You may obtain a copy of the License at
+
     http://www.apache.org/licenses/LICENSE-2.0
 
 Unless required by applicable law or agreed to in writing, software
@@ -75,7 +76,7 @@ var testInjection = []struct {
 
 func sendRequest(t *testing.T, clients *test.Clients, resolvableDomain bool, url *url.URL) (*spoof.Response, error) {
 	t.Logf("The domain of request is %s.", url.Hostname())
-	client, err := pkgTest.NewSpoofingClient(context.Background(), clients.KubeClient, t.Logf, url.Hostname(), resolvableDomain, test.AddRootCAtoTransport(context.Background(), t.Logf, clients, test.ServingFlags.Https))
+	client, err := pkgTest.NewSpoofingClient(context.Background(), clients.KubeClient, t.Logf, url.Hostname(), resolvableDomain, test.AddRootCAtoTransport(context.Background(), t.Logf, clients, test.ServingFlags.HTTPS))
 	if err != nil {
 		return nil, err
 	}
@@ -97,7 +98,7 @@ func testProxyToHelloworld(t *testing.T, clients *test.Clients, helloworldURL *u
 	// When resolvable domain is not set for external access test, use gateway for the endpoint as xip.io is flaky.
 	// ref: https://github.com/knative/serving/issues/5389
 	if !test.ServingFlags.ResolvableDomain && accessibleExternal {
-		gatewayTarget, mapper, err := ingress.GetIngressEndpoint(context.Background(), clients.KubeClient.Kube, pkgTest.Flags.IngressEndpoint)
+		gatewayTarget, mapper, err := ingress.GetIngressEndpoint(context.Background(), clients.KubeClient, pkgTest.Flags.IngressEndpoint)
 		if err != nil {
 			t.Fatal("Failed to get gateway IP:", err)
 		}
@@ -131,10 +132,10 @@ func testProxyToHelloworld(t *testing.T, clients *test.Clients, helloworldURL *u
 		clients.KubeClient,
 		t.Logf,
 		url,
-		v1test.RetryingRouteInconsistency(pkgTest.MatchesAllOf(pkgTest.IsStatusOK, pkgTest.EventuallyMatchesBody(helloworldResponse))),
+		v1test.RetryingRouteInconsistency(spoof.Retrying(spoof.MatchesAllOf(spoof.IsStatusOK, pkgTest.EventuallyMatchesBody(helloworldResponse)), http.StatusBadGateway)),
 		"HTTPProxy",
 		test.ServingFlags.ResolvableDomain,
-		test.AddRootCAtoTransport(context.Background(), t.Logf, clients, test.ServingFlags.Https),
+		test.AddRootCAtoTransport(context.Background(), t.Logf, clients, test.ServingFlags.HTTPS),
 	); err != nil {
 		t.Fatal("Failed to start endpoint of httpproxy:", err)
 	}
@@ -208,6 +209,8 @@ func TestServiceToServiceCall(t *testing.T) {
 			Path:   resources.Route.Status.URL.Path,
 		}
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
 			cancel := logstream.Start(t)
 			defer cancel()
 			testProxyToHelloworld(t, clients, helloworldURL, true /*inject*/, false /*accessible externally*/)
@@ -238,7 +241,7 @@ func testSvcToSvcCallViaActivator(t *testing.T, clients *test.Clients, injectA b
 	}
 
 	// Wait for the activator endpoints to equalize.
-	if err := waitForActivatorEndpoints(&testContext{
+	if err := waitForActivatorEndpoints(&TestContext{
 		t:         t,
 		resources: resources,
 		clients:   clients,
@@ -259,6 +262,8 @@ func TestSvcToSvcViaActivator(t *testing.T) {
 
 	for _, tc := range testInjection {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
 			cancel := logstream.Start(t)
 			defer cancel()
 			testSvcToSvcCallViaActivator(t, clients, tc.injectA, tc.injectB)
@@ -305,6 +310,8 @@ func TestCallToPublicService(t *testing.T) {
 
 	for _, tc := range gatewayTestCases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
 			cancel := logstream.Start(t)
 			defer cancel()
 			testProxyToHelloworld(t, clients, tc.url, false /*inject*/, tc.accessibleExternally)

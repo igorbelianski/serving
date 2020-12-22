@@ -5,7 +5,7 @@ Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 You may obtain a copy of the License at
 
-    https://www.apache.org/licenses/LICENSE-2.0
+    http://www.apache.org/licenses/LICENSE-2.0
 
 Unless required by applicable law or agreed to in writing, software
 distributed under the License is distributed on an "AS IS" BASIS,
@@ -211,14 +211,14 @@ func TestReconcileWithCollector(t *testing.T) {
 
 	scs.AutoscalingV1alpha1().Metrics(m.Namespace).Create(ctx, m, metav1.CreateOptions{})
 
-	if err := wait.PollImmediate(10*time.Millisecond, 2*time.Second, func() (bool, error) {
+	if err := wait.PollImmediate(10*time.Millisecond, 5*time.Second, func() (bool, error) {
 		return collector.createOrUpdateCalls.Load() > 0, nil
 	}); err != nil {
 		t.Fatal("CreateOrUpdate() called 0 times, want non-zero times")
 	}
 
 	scs.AutoscalingV1alpha1().Metrics(m.Namespace).Delete(ctx, m.Name, metav1.DeleteOptions{})
-	if err := wait.PollImmediate(10*time.Millisecond, 2*time.Second, func() (bool, error) {
+	if err := wait.PollImmediate(10*time.Millisecond, 5*time.Second, func() (bool, error) {
 		return collector.deleteCalls.Load() > 0, nil
 	}); err != nil {
 		t.Fatal("Delete() called 0 times, want non-zero times")
@@ -267,7 +267,6 @@ type testCollector struct {
 	createOrUpdateError error
 
 	deleteCalls atomic.Int32
-	deleteError error
 }
 
 func (c *testCollector) CreateOrUpdate(metric *av1alpha1.Metric) error {
@@ -275,9 +274,8 @@ func (c *testCollector) CreateOrUpdate(metric *av1alpha1.Metric) error {
 	return c.createOrUpdateError
 }
 
-func (c *testCollector) Delete(namespace, name string) error {
+func (c *testCollector) Delete(namespace, name string) {
 	c.deleteCalls.Inc()
-	return c.deleteError
 }
 
 func (c *testCollector) Watch(func(types.NamespacedName)) {}

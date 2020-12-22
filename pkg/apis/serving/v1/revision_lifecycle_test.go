@@ -13,6 +13,7 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
+
 package v1
 
 import (
@@ -192,6 +193,12 @@ func TestRevisionIsReady(t *testing.T) {
 			if got, want := r.IsReady(), tc.isReady; got != want {
 				t.Errorf("isReady =  %v want: %v", got, want)
 			}
+
+			r.Generation = 1
+			r.Status.ObservedGeneration = 2
+			if r.IsReady() {
+				t.Error("Expected IsReady() to be false when Generation != ObservedGeneration")
+			}
 		})
 	}
 }
@@ -310,7 +317,7 @@ func TestTypicalFlowWithContainerMissing(t *testing.T) {
 	apistest.CheckConditionOngoing(r, RevisionConditionContainerHealthy, t)
 	apistest.CheckConditionOngoing(r, RevisionConditionReady, t)
 
-	const want = "something about the container being not found"
+	const want = "something about the container being not found %s"
 	r.MarkContainerHealthyFalse(ReasonContainerMissing, want)
 	apistest.CheckConditionOngoing(r, RevisionConditionResourcesAvailable, t)
 	apistest.CheckConditionFailed(r, RevisionConditionContainerHealthy, t)

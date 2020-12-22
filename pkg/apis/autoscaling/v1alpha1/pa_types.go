@@ -1,5 +1,5 @@
 /*
-Copyright 2018 The Knative Authors.
+Copyright 2018 The Knative Authors
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -78,17 +78,6 @@ const (
 
 // PodAutoscalerSpec holds the desired state of the PodAutoscaler (from the client).
 type PodAutoscalerSpec struct {
-	// DeprecatedGeneration was used prior in Kubernetes versions <1.11
-	// when metadata.generation was not being incremented by the api server
-	//
-	// This property will be dropped in future Knative releases and should
-	// not be used - use metadata.generation
-	//
-	// Tracking issue: https://github.com/knative/serving/issues/643
-	//
-	// +optional
-	DeprecatedGeneration int64 `json:"generation,omitempty"`
-
 	// ContainerConcurrency specifies the maximum allowed
 	// in-flight (concurrent) requests per container of the Revision.
 	// Defaults to `0` which means unlimited concurrency.
@@ -151,6 +140,6 @@ type PodAutoscalerList struct {
 }
 
 // GetStatus retrieves the status of the PodAutoscaler. Implements the KRShaped interface.
-func (t *PodAutoscaler) GetStatus() *duckv1.Status {
-	return &t.Status.Status
+func (pa *PodAutoscaler) GetStatus() *duckv1.Status {
+	return &pa.Status.Status
 }

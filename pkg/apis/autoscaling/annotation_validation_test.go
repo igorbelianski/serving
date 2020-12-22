@@ -17,19 +17,24 @@ limitations under the License.
 package autoscaling
 
 import (
+	"context"
 	"fmt"
 	"reflect"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+
+	"knative.dev/pkg/apis"
+	"knative.dev/serving/pkg/autoscaler/config/autoscalerconfig"
 )
 
 func TestValidateAnnotations(t *testing.T) {
 	cases := []struct {
-		name               string
-		annotations        map[string]string
-		expectErr          string
-		allowInitScaleZero bool
+		name          string
+		annotations   map[string]string
+		expectErr     string
+		configMutator func(*autoscalerconfig.Config)
+		isInCreate    bool
 	}{{
 		name:        "nil annotations",
 		annotations: nil,
@@ -93,30 +98,84 @@ func TestValidateAnnotations(t *testing.T) {
 			MaxScaleAnnotationKey: "0",
 		},
 	}, {
-		name:        "panic window percentange bad",
+		name: "maxScale is greater than MaxScaleLimit when in create",
+		configMutator: func(config *autoscalerconfig.Config) {
+			config.MaxScaleLimit = 10
+		},
+		isInCreate:  true,
+		annotations: map[string]string{MaxScaleAnnotationKey: "11"},
+		expectErr:   "expected 1 <= 11 <= 10: " + MaxScaleAnnotationKey,
+	}, {
+		name: "maxScale is greater than MaxScaleLimit when in create and default MaxScale is set",
+		configMutator: func(config *autoscalerconfig.Config) {
+			config.MaxScaleLimit = 10
+			config.MaxScale = 11
+		},
+		isInCreate:  true,
+		annotations: map[string]string{MaxScaleAnnotationKey: "20"},
+		expectErr:   "expected 1 <= 20 <= 10: " + MaxScaleAnnotationKey,
+	}, {
+		name: "maxScale is greater than MaxScaleLimit when not in create",
+		configMutator: func(config *autoscalerconfig.Config) {
+			config.MaxScaleLimit = 10
+		},
+		isInCreate:  false,
+		annotations: map[string]string{MaxScaleAnnotationKey: "11"},
+	}, {
+		name: "maxScale is explicitly set to 0 when MaxScaleLimit and default MaxScale are set",
+		configMutator: func(config *autoscalerconfig.Config) {
+			config.MaxScaleLimit = 10
+			config.MaxScale = 11
+		},
+		isInCreate:  true,
+		annotations: map[string]string{MaxScaleAnnotationKey: "0"},
+		expectErr:   "maxScale=0 (unlimited), must be less than 10: " + MaxScaleAnnotationKey,
+	}, {
+		name: "maxScale is not set when both MaxScaleLimit and default MaxScale are set",
+		configMutator: func(config *autoscalerconfig.Config) {
+			config.MaxScaleLimit = 10
+			config.MaxScale = 11
+		},
+		isInCreate: true,
+	}, {
+		name: "neither maxScale nor default MaxScale is set when MaxScaleLimit is set",
+		configMutator: func(config *autoscalerconfig.Config) {
+			config.MaxScaleLimit = 10
+		},
+		isInCreate: true,
+		expectErr:  "maxScale=0 (unlimited), must be less than 10: " + MaxScaleAnnotationKey,
+	}, {
+		name: "maxScale is less than MaxScaleLimit",
+		configMutator: func(config *autoscalerconfig.Config) {
+			config.MaxScaleLimit = 10
+		},
+		isInCreate:  true,
+		annotations: map[string]string{MaxScaleAnnotationKey: "9"},
+	}, {
+		name:        "panic window percentage bad",
 		annotations: map[string]string{PanicWindowPercentageAnnotationKey: "-1"},
 		expectErr:   "expected 1 <= -1 <= 100: " + PanicWindowPercentageAnnotationKey,
 	}, {
-		name:        "panic window percentange bad2",
+		name:        "panic window percentage bad2",
 		annotations: map[string]string{PanicWindowPercentageAnnotationKey: "202"},
 		expectErr:   "expected 1 <= 202 <= 100: " + PanicWindowPercentageAnnotationKey,
 	}, {
-		name:        "panic window percentange bad3",
+		name:        "panic window percentage bad3",
 		annotations: map[string]string{PanicWindowPercentageAnnotationKey: "fifty"},
 		expectErr:   "invalid value: fifty: " + PanicWindowPercentageAnnotationKey,
 	}, {
-		name:        "panic window percentange good",
+		name:        "panic window percentage good",
 		annotations: map[string]string{PanicThresholdPercentageAnnotationKey: "210"},
 	}, {
-		name:        "panic threshold percentange bad2",
+		name:        "panic threshold percentage bad2",
 		annotations: map[string]string{PanicThresholdPercentageAnnotationKey: "109"},
 		expectErr:   "expected 110 <= 109 <= 1000: " + PanicThresholdPercentageAnnotationKey,
 	}, {
-		name:        "panic threshold percentange bad2.5",
+		name:        "panic threshold percentage bad2.5",
 		annotations: map[string]string{PanicThresholdPercentageAnnotationKey: "10009"},
 		expectErr:   "expected 110 <= 10009 <= 1000: " + PanicThresholdPercentageAnnotationKey,
 	}, {
-		name:        "panic threshold percentange bad3",
+		name:        "panic threshold percentage bad3",
 		annotations: map[string]string{PanicThresholdPercentageAnnotationKey: "fifty"},
 		expectErr:   "invalid value: fifty: " + PanicThresholdPercentageAnnotationKey,
 	}, {
@@ -172,6 +231,10 @@ func TestValidateAnnotations(t *testing.T) {
 		annotations: map[string]string{WindowAnnotationKey: "365h"},
 		expectErr:   "expected 6s <= 365h <= 1h0m0s: " + WindowAnnotationKey,
 	}, {
+		name:        "window too precise",
+		annotations: map[string]string{WindowAnnotationKey: "1m9s82ms"},
+		expectErr:   "must be specified with at most second precision: " + WindowAnnotationKey,
+	}, {
 		name:        "annotation /window is invalid for class HPA and metric CPU",
 		annotations: map[string]string{WindowAnnotationKey: "7s", ClassAnnotationKey: HPA, MetricAnnotationKey: CPU},
 		expectErr:   fmt.Sprintf("invalid key name %q: \n%s for %s %s", WindowAnnotationKey, HPA, MetricAnnotationKey, CPU),
@@ -214,6 +277,28 @@ func TestValidateAnnotations(t *testing.T) {
 		annotations: map[string]string{ScaleToZeroPodRetentionPeriodKey: "twenty-two-minutes-and-five-seconds"},
 		expectErr:   "invalid value: twenty-two-minutes-and-five-seconds: " + ScaleToZeroPodRetentionPeriodKey,
 	}, {
+		name:        "valid 0 scale down delay",
+		annotations: map[string]string{ScaleDownDelayAnnotationKey: "0"},
+	}, {
+		name:        "valid positive scale down delay",
+		annotations: map[string]string{ScaleDownDelayAnnotationKey: "21m31s"},
+	}, {
+		name:        "invalid positive scale down delay",
+		annotations: map[string]string{ScaleDownDelayAnnotationKey: "311m"},
+		expectErr:   "expected 0s <= 311m <= 1h0m0s: " + ScaleDownDelayAnnotationKey,
+	}, {
+		name:        "invalid positive scale down delay - too precise",
+		annotations: map[string]string{ScaleDownDelayAnnotationKey: "42.5s"},
+		expectErr:   "must be specified with at most second precision: " + ScaleDownDelayAnnotationKey,
+	}, {
+		name:        "invalid negative scale down delay",
+		annotations: map[string]string{ScaleDownDelayAnnotationKey: "-42s"},
+		expectErr:   "expected 0s <= -42s <= 1h0m0s: " + ScaleDownDelayAnnotationKey,
+	}, {
+		name:        "invalid scale down delay",
+		annotations: map[string]string{ScaleDownDelayAnnotationKey: "twenty-two-minutes-and-five-seconds"},
+		expectErr:   "invalid value: twenty-two-minutes-and-five-seconds: " + ScaleDownDelayAnnotationKey,
+	}, {
 		name: "all together now fail",
 		annotations: map[string]string{
 			PanicThresholdPercentageAnnotationKey: "fifty",
@@ -252,29 +337,43 @@ func TestValidateAnnotations(t *testing.T) {
 		name:        "other than HPA and KPA class",
 		annotations: map[string]string{ClassAnnotationKey: "other", MetricAnnotationKey: RPS},
 	}, {
-		name:               "initial scale is zero but cluster doesn't allow",
-		allowInitScaleZero: false,
-		annotations:        map[string]string{InitialScaleAnnotationKey: "0"},
-		expectErr:          "invalid value: 0: autoscaling.knative.dev/initialScale",
+		name:        "initial scale is zero but cluster doesn't allow",
+		annotations: map[string]string{InitialScaleAnnotationKey: "0"},
+		expectErr:   "invalid value: 0: autoscaling.knative.dev/initialScale",
 	}, {
-		name:               "initial scale is zero and cluster allows",
-		allowInitScaleZero: true,
-		annotations:        map[string]string{InitialScaleAnnotationKey: "0"},
+		name: "initial scale is zero and cluster allows",
+		configMutator: func(config *autoscalerconfig.Config) {
+			config.AllowZeroInitialScale = true
+		},
+		annotations: map[string]string{InitialScaleAnnotationKey: "0"},
 	}, {
-		name:               "initial scale is greater than 0",
-		allowInitScaleZero: false,
-		annotations:        map[string]string{InitialScaleAnnotationKey: "2"},
+		name:        "initial scale is greater than 0",
+		annotations: map[string]string{InitialScaleAnnotationKey: "2"},
 	}, {
-		name:               "initial scale non-parseable",
-		allowInitScaleZero: false,
-		annotations:        map[string]string{InitialScaleAnnotationKey: "invalid"},
-		expectErr:          "invalid value: invalid: autoscaling.knative.dev/initialScale",
+		name:        "initial scale non-parseable",
+		annotations: map[string]string{InitialScaleAnnotationKey: "invalid"},
+		expectErr:   "invalid value: invalid: autoscaling.knative.dev/initialScale",
 	}}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got, want := ValidateAnnotations(c.allowInitScaleZero, c.annotations).Error(), c.expectErr; !reflect.DeepEqual(got, want) {
+			cfg := defaultConfig()
+			if c.configMutator != nil {
+				c.configMutator(cfg)
+			}
+			ctx := context.Background()
+			if c.isInCreate {
+				ctx = apis.WithinCreate(ctx)
+			}
+			if got, want := ValidateAnnotations(ctx, cfg, c.annotations).Error(), c.expectErr; !reflect.DeepEqual(got, want) {
 				t.Errorf("\nErr = %q,\nwant: %q, diff(-want,+got):\n%s", got, want, cmp.Diff(want, got))
 			}
 		})
+	}
+}
+
+func defaultConfig() *autoscalerconfig.Config {
+	return &autoscalerconfig.Config{
+		AllowZeroInitialScale: false,
+		MaxScaleLimit:         0,
 	}
 }

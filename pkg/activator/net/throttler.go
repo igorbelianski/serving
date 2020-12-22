@@ -20,6 +20,7 @@ import (
 	"context"
 	"math"
 	"math/rand"
+	"net/http"
 	"sort"
 	"sync"
 
@@ -32,19 +33,19 @@ import (
 	corev1listers "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/tools/cache"
 
-	"knative.dev/networking/pkg/apis/networking"
+	pkgnet "knative.dev/networking/pkg/apis/networking"
 	endpointsinformer "knative.dev/pkg/client/injection/kube/informers/core/v1/endpoints"
 	serviceinformer "knative.dev/pkg/client/injection/kube/informers/core/v1/service"
 	"knative.dev/pkg/controller"
 	"knative.dev/pkg/logging"
 	"knative.dev/pkg/logging/logkey"
-	"knative.dev/pkg/network"
 	"knative.dev/pkg/reconciler"
 	"knative.dev/serving/pkg/activator/util"
 	"knative.dev/serving/pkg/apis/serving"
 	v1 "knative.dev/serving/pkg/apis/serving/v1"
 	revisioninformer "knative.dev/serving/pkg/client/injection/informers/serving/v1/revision"
 	servinglisters "knative.dev/serving/pkg/client/listers/serving/v1"
+	"knative.dev/serving/pkg/networking"
 	"knative.dev/serving/pkg/queue"
 )
 
@@ -62,15 +63,28 @@ const (
 	revisionMaxConcurrency = queue.MaxBreakerCapacity
 )
 
+func newPodTracker(dest string, b breaker) *podTracker {
+	tracker := &podTracker{
+		dest: dest,
+		b:    b,
+	}
+	tracker.decreaseWeight = func() { tracker.weight.Add(-1) }
+
+	return tracker
+}
+
 type podTracker struct {
 	dest string
 	b    breaker
+
 	// weight is used for LB policy implementations.
 	weight atomic.Int32
+	// decreaseWeight is an allocation optimization for the randomChoice2 policy.
+	decreaseWeight func()
 }
 
-func (p *podTracker) addWeight(w int32) {
-	p.weight.Add(w)
+func (p *podTracker) increaseWeight() {
+	p.weight.Add(1)
 }
 
 func (p *podTracker) getWeight() int32 {
@@ -88,11 +102,11 @@ func (p *podTracker) Capacity() int {
 	return p.b.Capacity()
 }
 
-func (p *podTracker) UpdateConcurrency(c int) error {
+func (p *podTracker) UpdateConcurrency(c int) {
 	if p.b == nil {
-		return nil
+		return
 	}
-	return p.b.UpdateConcurrency(c)
+	p.b.UpdateConcurrency(c)
 }
 
 func (p *podTracker) Reserve(ctx context.Context) (func(), bool) {
@@ -105,7 +119,7 @@ func (p *podTracker) Reserve(ctx context.Context) (func(), bool) {
 type breaker interface {
 	Capacity() int
 	Maybe(ctx context.Context, thunk func()) error
-	UpdateConcurrency(int) error
+	UpdateConcurrency(int)
 	Reserve(ctx context.Context) (func(), bool)
 }
 
@@ -157,7 +171,7 @@ func newRevisionThrottler(revID types.NamespacedName,
 	containerConcurrency int, proto string,
 	breakerParams queue.BreakerParams,
 	logger *zap.SugaredLogger) *revisionThrottler {
-	logger = logger.With(zap.Object(logkey.Key, logging.NamespacedName(revID)))
+	logger = logger.With(zap.String(logkey.Key, revID.String()))
 	var (
 		revBreaker breaker
 		lbp        lbPolicy
@@ -309,9 +323,7 @@ func (rt *revisionThrottler) updateCapacity(backendCount int) {
 	rt.breaker.UpdateConcurrency(capacity)
 }
 
-func (rt *revisionThrottler) updateThrottlerState(
-	throttler *Throttler, backendCount int,
-	trackers []*podTracker, clusterIPDest *podTracker) {
+func (rt *revisionThrottler) updateThrottlerState(backendCount int, trackers []*podTracker, clusterIPDest *podTracker) {
 	rt.logger.Infof("Updating Revision Throttler with: clusterIP = %v, trackers = %d, backends = %d",
 		clusterIPDest, len(trackers), backendCount)
 
@@ -395,7 +407,7 @@ func assignSlice(trackers []*podTracker, selfIndex, numActivators, cc int) []*po
 
 // This function will never be called in parallel but `try` can be called in parallel to this so we need
 // to lock on updating concurrency / trackers
-func (rt *revisionThrottler) handleUpdate(throttler *Throttler, update revisionDestsUpdate) {
+func (rt *revisionThrottler) handleUpdate(update revisionDestsUpdate) {
 	rt.logger.Debugw("Handling update",
 		zap.String("ClusterIP", update.ClusterIPDest), zap.Object("dests", logging.StringSet(update.Dests)))
 
@@ -417,28 +429,23 @@ func (rt *revisionThrottler) handleUpdate(throttler *Throttler, update revisionD
 			tracker, ok := trackersMap[newDest]
 			if !ok {
 				if rt.containerConcurrency == 0 {
-					tracker = &podTracker{dest: newDest}
+					tracker = newPodTracker(newDest, nil)
 				} else {
-					tracker = &podTracker{
-						dest: newDest,
-						b: queue.NewBreaker(queue.BreakerParams{
-							QueueDepth:      breakerQueueDepth,
-							MaxConcurrency:  rt.containerConcurrency,
-							InitialCapacity: rt.containerConcurrency, // Presume full unused capacity.
-						}),
-					}
+					tracker = newPodTracker(newDest, queue.NewBreaker(queue.BreakerParams{
+						QueueDepth:      breakerQueueDepth,
+						MaxConcurrency:  rt.containerConcurrency,
+						InitialCapacity: rt.containerConcurrency, // Presume full unused capacity.
+					}))
 				}
 			}
 			trackers = append(trackers, tracker)
 		}
 
-		rt.updateThrottlerState(throttler, len(update.Dests), trackers, nil /*clusterIP*/)
+		rt.updateThrottlerState(len(update.Dests), trackers, nil /*clusterIP*/)
 		return
 	}
 
-	rt.updateThrottlerState(throttler, len(update.Dests), nil /*trackers*/, &podTracker{
-		dest: update.ClusterIPDest,
-	})
+	rt.updateThrottlerState(len(update.Dests), nil /*trackers*/, newPodTracker(update.ClusterIPDest, nil))
 }
 
 // Throttler load balances requests to revisions based on capacity. When `Run` is called it listens for
@@ -481,16 +488,16 @@ func NewThrottler(ctx context.Context, ipAddr string) *Throttler {
 		FilterFunc: reconciler.LabelFilterFunc(networking.ServiceTypeKey,
 			string(networking.ServiceTypePublic), false),
 		Handler: cache.ResourceEventHandlerFuncs{
-			AddFunc:    t.publicEndspointsUpdated,
-			UpdateFunc: controller.PassNew(t.publicEndspointsUpdated),
+			AddFunc:    t.publicEndpointsUpdated,
+			UpdateFunc: controller.PassNew(t.publicEndpointsUpdated),
 		},
 	})
 	return t
 }
 
 // Run starts the throttler and blocks until the context is done.
-func (t *Throttler) Run(ctx context.Context) {
-	rbm := newRevisionBackendsManager(ctx, network.AutoTransport)
+func (t *Throttler) Run(ctx context.Context, probeTransport http.RoundTripper) {
+	rbm := newRevisionBackendsManager(ctx, probeTransport)
 	// Update channel is closed when ctx is done.
 	t.run(rbm.updates())
 }
@@ -541,7 +548,7 @@ func (t *Throttler) getOrCreateRevisionThrottler(revID types.NamespacedName) (*r
 		revThrottler = newRevisionThrottler(
 			revID,
 			int(rev.Spec.GetContainerConcurrency()),
-			networking.ServicePortName(rev.GetProtocol()),
+			pkgnet.ServicePortName(rev.GetProtocol()),
 			queue.BreakerParams{QueueDepth: breakerQueueDepth, MaxConcurrency: revisionMaxConcurrency},
 			t.logger,
 		)
@@ -556,11 +563,11 @@ func (t *Throttler) revisionUpdated(obj interface{}) {
 	rev := obj.(*v1.Revision)
 	revID := types.NamespacedName{Namespace: rev.Namespace, Name: rev.Name}
 
-	t.logger.Debug("Revision update", zap.Object(logkey.Key, logging.NamespacedName(revID)))
+	t.logger.Debug("Revision update", zap.String(logkey.Key, revID.String()))
 
 	if _, err := t.getOrCreateRevisionThrottler(revID); err != nil {
 		t.logger.Errorw("Failed to get revision throttler for revision",
-			zap.Error(err), zap.Object(logkey.Key, logging.NamespacedName(revID)))
+			zap.Error(err), zap.String(logkey.Key, revID.String()))
 	}
 }
 
@@ -570,7 +577,7 @@ func (t *Throttler) revisionDeleted(obj interface{}) {
 	rev := obj.(*v1.Revision)
 	revID := types.NamespacedName{Namespace: rev.Namespace, Name: rev.Name}
 
-	t.logger.Debugw("Revision delete", zap.Object(logkey.Key, logging.NamespacedName(revID)))
+	t.logger.Debugw("Revision delete", zap.String(logkey.Key, revID.String()))
 
 	t.revisionThrottlersMutex.Lock()
 	defer t.revisionThrottlersMutex.Unlock()
@@ -580,14 +587,12 @@ func (t *Throttler) revisionDeleted(obj interface{}) {
 func (t *Throttler) handleUpdate(update revisionDestsUpdate) {
 	if rt, err := t.getOrCreateRevisionThrottler(update.Rev); err != nil {
 		if k8serrors.IsNotFound(err) {
-			t.logger.Debugw("Revision not found. It was probably removed",
-				zap.Object(logkey.Key, logging.NamespacedName(update.Rev)))
+			t.logger.Debugw("Revision not found. It was probably removed", zap.String(logkey.Key, update.Rev.String()))
 		} else {
-			t.logger.Errorw("Failed to get revision throttler", zap.Error(err),
-				zap.Object(logkey.Key, logging.NamespacedName(update.Rev)))
+			t.logger.Errorw("Failed to get revision throttler", zap.Error(err), zap.String(logkey.Key, update.Rev.String()))
 		}
 	} else {
-		rt.handleUpdate(t, update)
+		rt.handleUpdate(update)
 	}
 }
 
@@ -602,11 +607,10 @@ func (t *Throttler) handlePubEpsUpdate(eps *corev1.Endpoints) {
 	}
 	rev := types.NamespacedName{Name: revN, Namespace: eps.Namespace}
 	if rt, err := t.getOrCreateRevisionThrottler(rev); err != nil {
-		logger := t.logger.With(zap.Object(logkey.Key, logging.NamespacedName(rev)))
 		if k8serrors.IsNotFound(err) {
-			logger.Debug("Revision not found. It was probably removed")
+			t.logger.Debugw("Revision not found. It was probably removed", zap.String(logkey.Key, rev.String()))
 		} else {
-			logger.Errorw("Failed to get revision throttler", zap.Error(err))
+			t.logger.Errorw("Failed to get revision throttler", zap.Error(err), zap.String(logkey.Key, rev.String()))
 		}
 	} else {
 		rt.handlePubEpsUpdate(eps, t.ipAddress)
@@ -659,7 +663,7 @@ func inferIndex(eps []string, ipAddress string) int {
 	return idx
 }
 
-func (t *Throttler) publicEndspointsUpdated(newObj interface{}) {
+func (t *Throttler) publicEndpointsUpdated(newObj interface{}) {
 	endpoints := newObj.(*corev1.Endpoints)
 	t.logger.Info("Updated public Endpoints: ", endpoints.Name)
 	t.epsUpdateCh <- endpoints
@@ -722,7 +726,7 @@ func zeroOrOne(x int) int32 {
 }
 
 // UpdateConcurrency sets the concurrency of the breaker
-func (ib *infiniteBreaker) UpdateConcurrency(cc int) error {
+func (ib *infiniteBreaker) UpdateConcurrency(cc int) {
 	rcc := zeroOrOne(cc)
 	// We lock here to make sure two scale up events don't
 	// stomp on each other's feet.
@@ -739,7 +743,6 @@ func (ib *infiniteBreaker) UpdateConcurrency(cc int) error {
 			close(ib.broadcast)
 		}
 	}
-	return nil
 }
 
 // Maybe executes thunk when capacity is available
@@ -763,7 +766,7 @@ func (ib *infiniteBreaker) Maybe(ctx context.Context, thunk func()) error {
 		thunk()
 		return nil
 	case <-ctx.Done():
-		ib.logger.Infof("Context is closed: %v", ctx.Err())
+		ib.logger.Info("Context is closed: ", ctx.Err())
 		return ctx.Err()
 	}
 }

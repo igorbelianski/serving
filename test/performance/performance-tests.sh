@@ -21,7 +21,7 @@
 # Setup env vars to override the default settings
 export BENCHMARK_ROOT_PATH="$GOPATH/src/knative.dev/serving/test/performance/benchmarks"
 
-source vendor/knative.dev/test-infra/scripts/performance-tests.sh
+source vendor/knative.dev/hack/performance-tests.sh
 source $(dirname $0)/../e2e-networking-library.sh
 
 # Env vars required for installing Istio.
@@ -30,6 +30,9 @@ export MESH=0
 export KNATIVE_DEFAULT_NAMESPACE="knative-serving"
 export SYSTEM_NAMESPACE="knative-serving"
 export ISTIO_VERSION="stable"
+# Pin net-istio to a commit when the stable Istio version was 1.4.6
+# TODO(chizhg): unpin the version after https://github.com/knative/serving/issues/9673 is root caused and fixed
+export NET_ISTIO_COMMIT="f64ed34d3776a444372483dddc15a330c6c1ac53"
 export UNINSTALL_LIST=()
 export TMP_DIR=$(mktemp -d -t ci-$(date +%Y-%m-%d-%H-%M-%S)-XXXXXXXXXX)
 
@@ -39,19 +42,19 @@ function update_knative() {
 
   echo ">> Update istio"
   # Some istio pods occasionally get overloaded and die, delete all deployments
-  # and services from istio before reintalling it, to get them freshly recreated
+  # and services from istio before reinstalling it, to get them freshly recreated
   kubectl delete deployments --all -n istio-system
   kubectl delete services --all -n istio-system
 
   # Create the ${SYSTEM_NAMESPACE} is it does not exist.
   kubectl get ns "${SYSTEM_NAMESPACE}" || kubectl create namespace "${SYSTEM_NAMESPACE}"
-  install_istio "./third_party/net-istio.yaml" || abort "Failed to install Istio"
+  install_istio "./third_party/istio-latest/net-istio.yaml" || abort "Failed to install Istio"
 
   # Overprovision the Istio gateways and pilot.
   kubectl patch hpa -n istio-system istio-ingressgateway \
-    --patch '{"spec": {"minReplicas": 10, "maxReplicas": 10}}'
+    --patch '{"spec": {"minReplicas": 15, "maxReplicas": 15}}'
   kubectl patch deploy -n istio-system cluster-local-gateway \
-    --patch '{"spec": {"replicas": 10}}'
+    --patch '{"spec": {"replicas": 15}}'
 
   echo ">> Updating serving"
   # Retry installation for at most three times as there can sometime be a race condition when applying serving CRDs

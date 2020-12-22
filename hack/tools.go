@@ -20,8 +20,8 @@ package tools
 
 import (
 	_ "k8s.io/code-generator"
+	_ "knative.dev/hack"
 	_ "knative.dev/pkg/configmap/hash-gen"
-	_ "knative.dev/test-infra/scripts"
 
 	// codegen: hack/generate-knative.sh
 	_ "knative.dev/pkg/hack"
@@ -47,6 +47,5 @@ import (
 	_ "knative.dev/networking/config"
 
 	// For load testing
-	_ "github.com/tsenart/vegeta"
-	_ "knative.dev/pkg/testutils/clustermanager/perf-tests"
+	_ "github.com/tsenart/vegeta/v12"
 )

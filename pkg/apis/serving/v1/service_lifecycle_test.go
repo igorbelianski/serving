@@ -13,6 +13,7 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
+
 package v1
 
 import (
@@ -164,6 +165,12 @@ func TestServiceIsReady(t *testing.T) {
 		s := Service{Status: tc.status}
 		if e, a := tc.isReady, s.IsReady(); e != a {
 			t.Errorf("%q expected: %v got: %v", tc.name, e, a)
+		}
+
+		s.Generation = 1
+		s.Status.ObservedGeneration = 2
+		if s.IsReady() {
+			t.Error("Expected IsReady() to be false when Generation != ObservedGeneration")
 		}
 	}
 }
@@ -543,7 +550,7 @@ func TestConfigurationStatusPropagation(t *testing.T) {
 	}
 
 	if diff := cmp.Diff(want, svc.Status); diff != "" {
-		t.Errorf("unexpected ServiceStatus (-want +got): %s", diff)
+		t.Error("unexpected ServiceStatus (-want +got):", diff)
 	}
 }
 
@@ -700,6 +707,6 @@ func TestRouteStatusPropagation(t *testing.T) {
 	}
 
 	if diff := cmp.Diff(want, svc.Status); diff != "" {
-		t.Errorf("unexpected ServiceStatus (-want +got): %s", diff)
+		t.Error("unexpected ServiceStatus (-want +got):", diff)
 	}
 }

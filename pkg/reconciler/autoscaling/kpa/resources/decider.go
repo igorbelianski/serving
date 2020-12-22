@@ -21,7 +21,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/types"
 	asv1a1 "knative.dev/serving/pkg/apis/autoscaling/v1alpha1"
-	autoscalerconfig "knative.dev/serving/pkg/autoscaler/config"
+	"knative.dev/serving/pkg/autoscaler/config/autoscalerconfig"
 	"knative.dev/serving/pkg/autoscaler/scaling"
 	"knative.dev/serving/pkg/reconciler/autoscaling/resources"
 )
@@ -35,7 +35,7 @@ type Deciders interface {
 	Create(ctx context.Context, decider *scaling.Decider) (*scaling.Decider, error)
 
 	// Delete removes the Decider resource for a given key, returning any errors.
-	Delete(ctx context.Context, namespace, name string) error
+	Delete(ctx context.Context, namespace, name string)
 
 	// Watch registers a function to call when Decider change.
 	Watch(watcher func(types.NamespacedName))
@@ -47,7 +47,7 @@ type Deciders interface {
 // MakeDecider constructs a Decider resource from a PodAutoscaler taking
 // into account the PA's ContainerConcurrency and the relevant
 // autoscaling annotation.
-func MakeDecider(ctx context.Context, pa *asv1a1.PodAutoscaler, config *autoscalerconfig.Config) *scaling.Decider {
+func MakeDecider(_ context.Context, pa *asv1a1.PodAutoscaler, config *autoscalerconfig.Config) *scaling.Decider {
 	panicThresholdPercentage := config.PanicThresholdPercentage
 	if x, ok := pa.PanicThresholdPercentage(); ok {
 		panicThresholdPercentage = x
@@ -60,6 +60,12 @@ func MakeDecider(ctx context.Context, pa *asv1a1.PodAutoscaler, config *autoscal
 	if x, ok := pa.TargetBC(); ok {
 		tbc = x
 	}
+
+	scaleDownDelay := config.ScaleDownDelay
+	if sdd, ok := pa.ScaleDownDelay(); ok {
+		scaleDownDelay = sdd
+	}
+
 	return &scaling.Decider{
 		ObjectMeta: *pa.ObjectMeta.DeepCopy(),
 		Spec: scaling.DeciderSpec{
@@ -72,6 +78,7 @@ func MakeDecider(ctx context.Context, pa *asv1a1.PodAutoscaler, config *autoscal
 			ActivatorCapacity:   config.ActivatorCapacity,
 			PanicThreshold:      panicThreshold,
 			StableWindow:        resources.StableWindow(pa, config),
+			ScaleDownDelay:      scaleDownDelay,
 			InitialScale:        GetInitialScale(config, pa),
 			Reachable:           pa.Spec.Reachability != asv1a1.ReachabilityUnreachable,
 		},

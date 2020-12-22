@@ -31,13 +31,6 @@
 
 source $(dirname $0)/e2e-common.sh
 
-latest_version() {
-  local semver=$(git describe --match "v[0-9]*" --abbrev=0)
-  local major_minor=$(echo "$semver" | cut -d. -f1-2)
-
-  # Get the latest patch release for the major minor
-  git tag -l "${major_minor}*" | sort -r --version-sort | head -n1
-}
 # Latest serving release. If user does not supply this as a flag, the latest
 # tagged release on the current branch will be used.
 LATEST_SERVING_RELEASE_VERSION=$(latest_version)
@@ -52,6 +45,7 @@ function install_latest_release() {
 
   install_knative_serving latest-release \
       || fail_test "Knative latest release installation failed"
+  test_logging_config_setup
   wait_until_pods_running ${SYSTEM_NAMESPACE}
   wait_until_batch_job_complete ${SYSTEM_NAMESPACE}
 }
@@ -59,6 +53,7 @@ function install_latest_release() {
 function install_head() {
   header "Installing Knative head release"
   install_knative_serving || fail_test "Knative head release installation failed"
+  test_logging_config_setup
   wait_until_pods_running ${SYSTEM_NAMESPACE}
   wait_until_batch_job_complete ${SYSTEM_NAMESPACE}
 }
@@ -81,6 +76,9 @@ disable_chaosduck
 
 # TODO(#2656): Reduce the timeout after we get this test to consistently passing.
 TIMEOUT=10m
+# Probe tests starts before postupgrade tests and ends after postdowngrade tests.
+# The timeout should be at least 10m + 10m + installation time
+PROBE_TIMEOUT=20m
 
 header "Running preupgrade tests"
 
@@ -89,10 +87,12 @@ go_test_e2e -tags=preupgrade -timeout=${TIMEOUT} ./test/upgrade \
 
 header "Starting prober test"
 
-# Remove this in case we failed to clean it up in an earlier test.
+# Remove the following files in case we failed to clean them up in an earlier test.
 rm -f /tmp/prober-signal
+rm -f /tmp/autoscaling-signal
+rm -f /tmp/autoscaling-tbc-signal
 
-go_test_e2e -tags=probe -timeout=${TIMEOUT} ./test/upgrade \
+go_test_e2e -tags=probe -timeout=${PROBE_TIMEOUT} ./test/upgrade \
   --resolvabledomain=$(use_resolvable_domain) &
 PROBER_PID=$!
 echo "Prober PID is ${PROBER_PID}"
@@ -109,11 +109,13 @@ header "Running postdowngrade tests"
 go_test_e2e -tags=postdowngrade -timeout=${TIMEOUT} ./test/upgrade \
   --resolvabledomain=$(use_resolvable_domain) || fail_test
 
-# The prober is blocking on /tmp/prober-signal to know when it should exit.
+# The probe tests are blocking on the following files to know when it should exit.
 #
 # This is kind of gross. First attempt was to just send a signal to the go test,
 # but "go test" intercepts the signal and always exits with a non-zero code.
 echo "done" > /tmp/prober-signal
+echo "done" > /tmp/autoscaling-signal
+echo "done" > /tmp/autoscaling-tbc-signal
 
 header "Waiting for prober test"
 wait ${PROBER_PID} || fail_test "Prober failed"

@@ -24,7 +24,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/dgrijalva/jwt-go"
+	"github.com/form3tech-oss/jwt-go"
 	"knative.dev/pkg/ptr"
 	pkgTest "knative.dev/pkg/test"
 	"knative.dev/pkg/test/spoof"
@@ -51,7 +51,7 @@ func TestConfigMapVolume(t *testing.T) {
 	text := test.AppendRandomString("hello-volumes-")
 
 	// Create the ConfigMap with random text.
-	configMap, err := clients.KubeClient.Kube.CoreV1().ConfigMaps(test.ServingNamespace).Create(context.Background(), &corev1.ConfigMap{
+	configMap, err := clients.KubeClient.CoreV1().ConfigMaps(test.ServingNamespace).Create(context.Background(), &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: names.Service, // Give it the same name as the service.
 		},
@@ -67,8 +67,8 @@ func TestConfigMapVolume(t *testing.T) {
 	// Clean up on test failure or interrupt
 	test.EnsureCleanup(t, func() {
 		test.TearDown(clients, &names)
-		if err := clients.KubeClient.Kube.CoreV1().ConfigMaps(test.ServingNamespace).Delete(context.Background(), configMap.Name, metav1.DeleteOptions{}); err != nil {
-			t.Errorf("ConfigMaps().Delete() = %v", err)
+		if err := clients.KubeClient.CoreV1().ConfigMaps(test.ServingNamespace).Delete(context.Background(), configMap.Name, metav1.DeleteOptions{}); err != nil {
+			t.Error("ConfigMaps().Delete() =", err)
 		}
 	})
 
@@ -118,7 +118,7 @@ func TestProjectedConfigMapVolume(t *testing.T) {
 	text := test.AppendRandomString("hello-volumes-")
 
 	// Create the ConfigMap with random text.
-	configMap, err := clients.KubeClient.Kube.CoreV1().ConfigMaps(test.ServingNamespace).Create(context.Background(), &corev1.ConfigMap{
+	configMap, err := clients.KubeClient.CoreV1().ConfigMaps(test.ServingNamespace).Create(context.Background(), &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: names.Service, // Give it the same name as the service.
 		},
@@ -134,8 +134,8 @@ func TestProjectedConfigMapVolume(t *testing.T) {
 	// Clean up on test failure or interrupt
 	test.EnsureCleanup(t, func() {
 		test.TearDown(clients, &names)
-		if err := clients.KubeClient.Kube.CoreV1().ConfigMaps(test.ServingNamespace).Delete(context.Background(), configMap.Name, metav1.DeleteOptions{}); err != nil {
-			t.Errorf("ConfigMaps().Delete() = %v", err)
+		if err := clients.KubeClient.CoreV1().ConfigMaps(test.ServingNamespace).Delete(context.Background(), configMap.Name, metav1.DeleteOptions{}); err != nil {
+			t.Error("ConfigMaps().Delete() =", err)
 		}
 	})
 
@@ -187,7 +187,7 @@ func TestSecretVolume(t *testing.T) {
 	text := test.ObjectNameForTest(t)
 
 	// Create the Secret with random text.
-	secret, err := clients.KubeClient.Kube.CoreV1().Secrets(test.ServingNamespace).Create(context.Background(), &corev1.Secret{
+	secret, err := clients.KubeClient.CoreV1().Secrets(test.ServingNamespace).Create(context.Background(), &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: names.Service, // name the Secret the same as the Service.
 		},
@@ -203,8 +203,8 @@ func TestSecretVolume(t *testing.T) {
 	// Clean up on test failure or interrupt
 	test.EnsureCleanup(t, func() {
 		test.TearDown(clients, &names)
-		if err := clients.KubeClient.Kube.CoreV1().Secrets(test.ServingNamespace).Delete(context.Background(), secret.Name, metav1.DeleteOptions{}); err != nil {
-			t.Errorf("Secrets().Delete() = %v", err)
+		if err := clients.KubeClient.CoreV1().Secrets(test.ServingNamespace).Delete(context.Background(), secret.Name, metav1.DeleteOptions{}); err != nil {
+			t.Error("Secrets().Delete() =", err)
 		}
 	})
 
@@ -250,7 +250,7 @@ func TestProjectedSecretVolume(t *testing.T) {
 	text := test.ObjectNameForTest(t)
 
 	// Create the Secret with random text.
-	secret, err := clients.KubeClient.Kube.CoreV1().Secrets(test.ServingNamespace).Create(context.Background(), &corev1.Secret{
+	secret, err := clients.KubeClient.CoreV1().Secrets(test.ServingNamespace).Create(context.Background(), &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: names.Service, // name the Secret the same as the Service.
 		},
@@ -266,8 +266,8 @@ func TestProjectedSecretVolume(t *testing.T) {
 	// Clean up on test failure or interrupt
 	test.EnsureCleanup(t, func() {
 		test.TearDown(clients, &names)
-		if err := clients.KubeClient.Kube.CoreV1().Secrets(test.ServingNamespace).Delete(context.Background(), secret.Name, metav1.DeleteOptions{}); err != nil {
-			t.Errorf("Secrets().Delete() = %v", err)
+		if err := clients.KubeClient.CoreV1().Secrets(test.ServingNamespace).Delete(context.Background(), secret.Name, metav1.DeleteOptions{}); err != nil {
+			t.Error("Secrets().Delete() =", err)
 		}
 	})
 
@@ -319,7 +319,7 @@ func TestProjectedComplex(t *testing.T) {
 	text3 := test.ObjectNameForTest(t)
 
 	// Create the ConfigMap with random text.
-	configMap, err := clients.KubeClient.Kube.CoreV1().ConfigMaps(test.ServingNamespace).Create(context.Background(), &corev1.ConfigMap{
+	configMap, err := clients.KubeClient.CoreV1().ConfigMaps(test.ServingNamespace).Create(context.Background(), &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: names.Service, // Give it the same name as the service.
 		},
@@ -334,7 +334,7 @@ func TestProjectedComplex(t *testing.T) {
 	t.Log("Successfully created configMap:", configMap)
 
 	// Create the Secret with random text.
-	secret, err := clients.KubeClient.Kube.CoreV1().Secrets(test.ServingNamespace).Create(context.Background(), &corev1.Secret{
+	secret, err := clients.KubeClient.CoreV1().Secrets(test.ServingNamespace).Create(context.Background(), &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: names.Service, // name the Secret the same as the Service.
 		},
@@ -350,8 +350,8 @@ func TestProjectedComplex(t *testing.T) {
 	// Clean up on test failure or interrupt
 	test.EnsureCleanup(t, func() {
 		test.TearDown(clients, &names)
-		if err := clients.KubeClient.Kube.CoreV1().Secrets(test.ServingNamespace).Delete(context.Background(), secret.Name, metav1.DeleteOptions{}); err != nil {
-			t.Errorf("Secrets().Delete() = %v", err)
+		if err := clients.KubeClient.CoreV1().Secrets(test.ServingNamespace).Delete(context.Background(), secret.Name, metav1.DeleteOptions{}); err != nil {
+			t.Error("Secrets().Delete() =", err)
 		}
 	})
 
@@ -470,10 +470,10 @@ func TestProjectedServiceAccountToken(t *testing.T) {
 		clients.KubeClient,
 		t.Logf,
 		names.URL,
-		v1test.RetryingRouteInconsistency(pkgTest.MatchesAllOf(pkgTest.IsStatusOK, parsesToken)),
+		v1test.RetryingRouteInconsistency(spoof.MatchesAllOf(spoof.IsStatusOK, parsesToken)),
 		"WaitForEndpointToServeTheToken",
 		test.ServingFlags.ResolvableDomain,
-		test.AddRootCAtoTransport(context.Background(), t.Logf, clients, test.ServingFlags.Https)); err != nil {
+		test.AddRootCAtoTransport(context.Background(), t.Logf, clients, test.ServingFlags.HTTPS)); err != nil {
 		t.Error(err)
 	}
 }

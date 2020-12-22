@@ -39,17 +39,18 @@ import (
 	"k8s.io/client-go/tools/cache"
 
 	network "knative.dev/networking/pkg"
-	"knative.dev/networking/pkg/apis/networking"
+	pkgnet "knative.dev/networking/pkg/apis/networking"
+	"knative.dev/networking/pkg/prober"
 	endpointsinformer "knative.dev/pkg/client/injection/kube/informers/core/v1/endpoints"
 	serviceinformer "knative.dev/pkg/client/injection/kube/informers/core/v1/service"
 	"knative.dev/pkg/controller"
 	"knative.dev/pkg/logging"
 	"knative.dev/pkg/logging/logkey"
-	"knative.dev/pkg/network/prober"
 	"knative.dev/pkg/reconciler"
 	"knative.dev/serving/pkg/apis/serving"
 	revisioninformer "knative.dev/serving/pkg/client/injection/informers/serving/v1/revision"
 	servinglisters "knative.dev/serving/pkg/client/listers/serving/v1"
+	"knative.dev/serving/pkg/networking"
 	"knative.dev/serving/pkg/queue"
 )
 
@@ -93,7 +94,7 @@ type revisionWatcher struct {
 	stopCh   <-chan struct{}
 	cancel   context.CancelFunc
 	rev      types.NamespacedName
-	protocol networking.ProtocolType
+	protocol pkgnet.ProtocolType
 	updateCh chan<- revisionDestsUpdate
 	done     chan struct{}
 
@@ -108,11 +109,11 @@ type revisionWatcher struct {
 	logger        *zap.SugaredLogger
 
 	// podsAddressable will be set to false if we cannot
-	// probe a pod directly, but its cluster IP has beeen successfully probed.
+	// probe a pod directly, but its cluster IP has been successfully probed.
 	podsAddressable bool
 }
 
-func newRevisionWatcher(ctx context.Context, rev types.NamespacedName, protocol networking.ProtocolType,
+func newRevisionWatcher(ctx context.Context, rev types.NamespacedName, protocol pkgnet.ProtocolType,
 	updateCh chan<- revisionDestsUpdate, destsCh chan dests,
 	transport http.RoundTripper, serviceLister corev1listers.ServiceLister,
 	logger *zap.SugaredLogger) *revisionWatcher {
@@ -128,7 +129,7 @@ func newRevisionWatcher(ctx context.Context, rev types.NamespacedName, protocol 
 		destsCh:         destsCh,
 		serviceLister:   serviceLister,
 		podsAddressable: true, // By default we presume we can talk to pods directly.
-		logger:          logger.With(zap.Object(logkey.Key, logging.NamespacedName(rev))),
+		logger:          logger.With(zap.String(logkey.Key, rev.String())),
 	}
 }
 
@@ -215,13 +216,13 @@ func (rw *revisionWatcher) probePodIPs(dests sets.String) (sets.String, bool, er
 	ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
 	defer cancel()
 
-	var probeGroup errgroup.Group
+	probeGroup, egCtx := errgroup.WithContext(ctx)
 	healthyDests := make(chan string, toProbe.Len())
 
 	for dest := range toProbe {
 		dest := dest // Standard Go concurrency pattern.
 		probeGroup.Go(func() error {
-			ok, err := rw.probe(ctx, dest)
+			ok, err := rw.probe(egCtx, dest)
 			if ok {
 				healthyDests <- dest
 			}
@@ -358,6 +359,7 @@ func (rw *revisionWatcher) run(probeFrequency time.Duration) {
 		case <-rw.stopCh:
 			return
 		case x := <-rw.destsCh:
+			rw.logger.Debugf("Updating Endpoints: ready backends: %d, not-ready backends: %d", len(x.ready), len(x.notReady))
 			prevDests, curDests = curDests, x
 		case <-tickCh:
 		}
@@ -439,7 +441,7 @@ func (rbm *revisionBackendsManager) updates() <-chan revisionDestsUpdate {
 	return rbm.updateCh
 }
 
-func (rbm *revisionBackendsManager) getRevisionProtocol(revID types.NamespacedName) (networking.ProtocolType, error) {
+func (rbm *revisionBackendsManager) getRevisionProtocol(revID types.NamespacedName) (pkgnet.ProtocolType, error) {
 	revision, err := rbm.revisionLister.Revisions(revID.Namespace).Get(revID.Name)
 	if err != nil {
 		return "", err
@@ -479,17 +481,13 @@ func (rbm *revisionBackendsManager) endpointsUpdated(newObj interface{}) {
 	}
 	endpoints := newObj.(*corev1.Endpoints)
 	revID := types.NamespacedName{Namespace: endpoints.Namespace, Name: endpoints.Labels[serving.RevisionLabelKey]}
-	logger := rbm.logger.With(zap.Object(logkey.Key, logging.NamespacedName(revID)))
-
-	logger.Debugf("Endpoints updated: %#v", newObj)
 
 	rw, err := rbm.getOrCreateRevisionWatcher(revID)
 	if err != nil {
-		logger.Errorw("Failed to get revision watcher", zap.Error(err))
+		rbm.logger.Errorw("Failed to get revision watcher", zap.Error(err), zap.String(logkey.Key, revID.String()))
 		return
 	}
-	ready, notReady := endpointsToDests(endpoints, networking.ServicePortName(rw.protocol))
-	logger.Debugf("Updating Endpoints: ready backends: %d, not-ready backends: %d", len(ready), len(notReady))
+	ready, notReady := endpointsToDests(endpoints, pkgnet.ServicePortName(rw.protocol))
 	select {
 	case <-rbm.ctx.Done():
 		return
@@ -516,7 +514,7 @@ func (rbm *revisionBackendsManager) endpointsDeleted(obj interface{}) {
 	ep := obj.(*corev1.Endpoints)
 	revID := types.NamespacedName{Namespace: ep.Namespace, Name: ep.Labels[serving.RevisionLabelKey]}
 
-	rbm.logger.Debugw("Deleting endpoint", zap.Object(logkey.Key, logging.NamespacedName(revID)))
+	rbm.logger.Debugw("Deleting endpoint", zap.String(logkey.Key, revID.String()))
 	rbm.revisionWatchersMux.Lock()
 	defer rbm.revisionWatchersMux.Unlock()
 	rbm.deleteRevisionWatcher(revID)

@@ -24,6 +24,7 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"knative.dev/pkg/ptr"
 	pkgTest "knative.dev/pkg/test"
@@ -31,6 +32,7 @@ import (
 	"knative.dev/serving/test"
 	v1test "knative.dev/serving/test/v1"
 
+	corev1 "k8s.io/api/core/v1"
 	rtesting "knative.dev/serving/pkg/testing/v1"
 )
 
@@ -74,11 +76,11 @@ func TestServiceCreateAndUpdate(t *testing.T) {
 	}
 
 	if err := validateAnnotations(objects); err != nil {
-		t.Errorf("Service annotations are incorrect: %v", err)
+		t.Error("Service annotations are incorrect:", err)
 	}
 
 	// We start a background prober to test if Route is always healthy even during Route update.
-	prober := test.RunRouteProber(t.Logf, clients, names.URL, test.AddRootCAtoTransport(context.Background(), t.Logf, clients, test.ServingFlags.Https))
+	prober := test.RunRouteProber(t.Logf, clients, names.URL, test.AddRootCAtoTransport(context.Background(), t.Logf, clients, test.ServingFlags.HTTPS))
 	defer test.AssertProberDefault(t, prober)
 
 	// Update Container Image
@@ -126,7 +128,7 @@ func TestServiceCreateAndUpdate(t *testing.T) {
 	}
 
 	// Update Metadata (Annotations)
-	t.Logf("Updating annotations of RevisionTemplateSpec for service %s", names.Service)
+	t.Log("Updating annotations of RevisionTemplateSpec for service", names.Service)
 	metadata = metav1.ObjectMeta{
 		Annotations: map[string]string{
 			"annotationA": "123",
@@ -220,11 +222,11 @@ func TestServiceBYOName(t *testing.T) {
 	}
 
 	if err := validateAnnotations(objects); err != nil {
-		t.Errorf("Service annotations are incorrect: %v", err)
+		t.Error("Service annotations are incorrect:", err)
 	}
 
 	// We start a background prober to test if Route is always healthy even during Route update.
-	prober := test.RunRouteProber(t.Logf, clients, names.URL, test.AddRootCAtoTransport(context.Background(), t.Logf, clients, test.ServingFlags.Https))
+	prober := test.RunRouteProber(t.Logf, clients, names.URL, test.AddRootCAtoTransport(context.Background(), t.Logf, clients, test.ServingFlags.HTTPS))
 	defer test.AssertProberDefault(t, prober)
 
 	// Update Container Image
@@ -273,7 +275,7 @@ func TestServiceWithTrafficSplit(t *testing.T) {
 		t.Fatal("Release shape is incorrect:", err)
 	}
 	if err := validateAnnotations(objects); err != nil {
-		t.Errorf("Service annotations are incorrect: %v", err)
+		t.Error("Service annotations are incorrect:", err)
 	}
 	firstRevision := names.Revision
 
@@ -304,6 +306,7 @@ func TestServiceWithTrafficSplit(t *testing.T) {
 			Tag:            "latest",
 			RevisionName:   objects.Config.Status.LatestReadyRevisionName,
 			LatestRevision: ptr.Bool(true),
+			Percent:        ptr.Int64(0),
 		},
 	}
 	t.Log("Waiting for Service to become ready with the new shape.")
@@ -337,6 +340,7 @@ func TestServiceWithTrafficSplit(t *testing.T) {
 		Tag:            "latest",
 		RevisionName:   secondRevision,
 		LatestRevision: ptr.Bool(true),
+		Percent:        ptr.Int64(0),
 	}
 	t.Log("Waiting for Service to become ready with the new shape.")
 	if err := waitForDesiredTrafficShape(t, names.Service, desiredTrafficShape, clients); err != nil {
@@ -364,8 +368,7 @@ func TestServiceWithTrafficSplit(t *testing.T) {
 			RevisionName: secondRevision,
 			Percent:      ptr.Int64(50),
 		}, {
-			Tag:     "latest",
-			Percent: nil,
+			Tag: "latest",
 		}},
 	})
 	if err != nil {
@@ -389,6 +392,7 @@ func TestServiceWithTrafficSplit(t *testing.T) {
 			Tag:            "latest",
 			RevisionName:   secondRevision,
 			LatestRevision: ptr.Bool(true),
+			Percent:        ptr.Int64(0),
 		},
 	}
 	t.Log("Waiting for Service to become ready with the new shape.")
@@ -420,6 +424,7 @@ func TestServiceWithTrafficSplit(t *testing.T) {
 		Tag:            "latest",
 		RevisionName:   thirdRevision,
 		LatestRevision: ptr.Bool(true),
+		Percent:        ptr.Int64(0),
 	}
 	t.Log("Waiting for Service to become ready with the new shape.")
 	if err := waitForDesiredTrafficShape(t, names.Service, desiredTrafficShape, clients); err != nil {
@@ -457,7 +462,7 @@ func TestServiceWithTrafficSplit(t *testing.T) {
 
 	// Verify in the end it's still the case.
 	if err := validateAnnotations(objects); err != nil {
-		t.Errorf("Service annotations are incorrect: %v", err)
+		t.Error("Service annotations are incorrect:", err)
 	}
 
 	// `candidate` now points to the latest.
@@ -506,7 +511,7 @@ func TestAnnotationPropagation(t *testing.T) {
 	}
 
 	if err := validateAnnotations(objects); err != nil {
-		t.Errorf("Annotations are incorrect: %v", err)
+		t.Error("Annotations are incorrect:", err)
 	}
 
 	if objects.Service, err = v1test.PatchService(t, clients, objects.Service,
@@ -534,12 +539,12 @@ func TestAnnotationPropagation(t *testing.T) {
 	}
 	objects, err = v1test.GetResourceObjects(clients, names)
 	if err != nil {
-		t.Errorf("Error getting objects: %v", err)
+		t.Error("Error getting objects:", err)
 	}
 
 	// Now we can validate the annotations.
 	if err := validateAnnotations(objects, "juicy"); err != nil {
-		t.Errorf("Annotations are incorrect: %v", err)
+		t.Error("Annotations are incorrect:", err)
 	}
 
 	if objects.Service, err = v1test.PatchService(t, clients, objects.Service,
@@ -567,17 +572,62 @@ func TestAnnotationPropagation(t *testing.T) {
 	}
 	objects, err = v1test.GetResourceObjects(clients, names)
 	if err != nil {
-		t.Errorf("Error getting objects: %v", err)
+		t.Error("Error getting objects:", err)
 	}
 
 	// Now we can validate the annotations.
 	if err := validateAnnotations(objects); err != nil {
-		t.Errorf("Annotations are incorrect: %v", err)
+		t.Error("Annotations are incorrect:", err)
 	}
 	if _, ok := objects.Config.Annotations["juicy"]; ok {
 		t.Error("Config still has `juicy` annotation")
 	}
 	if _, ok := objects.Route.Annotations["juicy"]; ok {
 		t.Error("Route still has `juicy` annotation")
+	}
+}
+
+// TestServiceCreateWithMultipleContainers tests both Creation paths for a service.
+// The test performs a series of Validate steps to ensure that the service transitions as expected during each step.
+func TestServiceCreateWithMultipleContainers(t *testing.T) {
+	if !test.ServingFlags.EnableAlphaFeatures {
+		t.Skip()
+	}
+	t.Parallel()
+	clients := test.Setup(t)
+
+	names := test.ResourceNames{
+		Service: test.ObjectNameForTest(t),
+		Image:   test.ServingContainer,
+		Sidecars: []string{
+			test.SidecarContainer,
+		},
+	}
+
+	// Clean up on test failure or interrupt
+	test.EnsureTearDown(t, clients, &names)
+	containers := []corev1.Container{{
+		Image: pkgTest.ImagePath(names.Image),
+		Ports: []corev1.ContainerPort{{
+			ContainerPort: 8881,
+		}},
+	}, {
+		Image: pkgTest.ImagePath(names.Sidecars[0]),
+	}}
+
+	// Setup initial Service
+	if _, err := v1test.CreateServiceReady(t, clients, &names, func(svc *v1.Service) {
+		svc.Spec.Template.Spec.Containers = containers
+	}); err != nil {
+		t.Fatalf("Failed to create initial Service %v: %v", names.Service, err)
+	}
+
+	// Validate State after Creation
+	if err := validateControlPlane(t, clients, names, "1" /*1 is the expected generation value*/); err != nil {
+		t.Error(err)
+	}
+
+	if err := validateDataPlane(t, clients, names, test.MultiContainerResponse); err != nil {
+		t.Error(err)
 	}
 }

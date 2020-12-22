@@ -19,12 +19,13 @@ package statforwarder
 import (
 	"errors"
 	"fmt"
+	"os"
 	"testing"
 	"time"
 
 	"github.com/google/go-cmp/cmp"
 	coordinationv1 "k8s.io/api/coordination/v1"
-	v1 "k8s.io/api/core/v1"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -37,7 +38,6 @@ import (
 	fakeserviceinformer "knative.dev/pkg/client/injection/kube/informers/core/v1/service/fake"
 	"knative.dev/pkg/controller"
 	"knative.dev/pkg/hash"
-	"knative.dev/pkg/logging"
 	rtesting "knative.dev/pkg/reconciler/testing"
 	"knative.dev/pkg/system"
 	asmetrics "knative.dev/serving/pkg/autoscaler/metrics"
@@ -46,20 +46,22 @@ import (
 const (
 	bucket1 = "as-bucket-00-of-02"
 	bucket2 = "as-bucket-01-of-02"
+	testIP1 = "1.23.456.789"
+	testIP2 = "0.23.456.789"
 )
 
 var (
-	testIP1   = "1.23.456.789"
-	testIP2   = "0.23.456.789"
-	testNs    = system.Namespace()
-	testBs    = hash.NewBucketSet(sets.NewString(bucket1))
-	testLease = &coordinationv1.Lease{
+	testHolder1 = "autoscaler-1_" + testIP1
+	testHolder2 = "autoscaler-2_" + testIP2
+	testNs      = system.Namespace()
+	testBs      = hash.NewBucketSet(sets.NewString(bucket1))
+	testLease   = &coordinationv1.Lease{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      bucket1,
 			Namespace: testNs,
 		},
 		Spec: coordinationv1.LeaseSpec{
-			HolderIdentity: &testIP1,
+			HolderIdentity: &testHolder1,
 		},
 	}
 	stat1 = asmetrics.StatMessage{
@@ -78,9 +80,15 @@ var (
 	noOp = func(sm asmetrics.StatMessage) {}
 )
 
+func must(t *testing.T, err error) {
+	t.Helper()
+	if err != nil {
+		t.Fatal(err.Error())
+	}
+}
+
 func TestForwarderReconcile(t *testing.T) {
 	ctx, cancel, informers := rtesting.SetupFakeContextWithCancel(t)
-	logger := logging.FromContext(ctx)
 	kubeClient := fakekubeclient.Get(ctx)
 	endpoints := fakeendpointsinformer.Get(ctx)
 	service := fakeserviceinformer.Get(ctx)
@@ -91,8 +99,12 @@ func TestForwarderReconcile(t *testing.T) {
 		t.Fatal("Failed to start informers:", err)
 	}
 
-	f1 := New(ctx, logger, kubeClient, testIP1, testBs, noOp)
-	f2 := New(ctx, logger, kubeClient, testIP2, testBs, noOp)
+	os.Setenv("POD_IP", testIP1)
+	f1 := New(ctx, testBs)
+	must(t, LeaseBasedProcessor(ctx, f1, noOp))
+	os.Setenv("POD_IP", testIP2)
+	f2 := New(ctx, testBs)
+	must(t, LeaseBasedProcessor(ctx, f2, noOp))
 
 	defer func() {
 		f1.Cancel()
@@ -113,14 +125,14 @@ func TestForwarderReconcile(t *testing.T) {
 		t.Fatal("Timeout to get the Service:", lastErr)
 	}
 
-	wantSubsets := []v1.EndpointSubset{{
-		Addresses: []v1.EndpointAddress{{
+	wantSubsets := []corev1.EndpointSubset{{
+		Addresses: []corev1.EndpointAddress{{
 			IP: testIP1,
 		}},
-		Ports: []v1.EndpointPort{{
+		Ports: []corev1.EndpointPort{{
 			Name:     autoscalerPortName,
 			Port:     autoscalerPort,
-			Protocol: v1.ProtocolTCP,
+			Protocol: corev1.ProtocolTCP,
 		}}},
 	}
 
@@ -144,13 +156,13 @@ func TestForwarderReconcile(t *testing.T) {
 
 	// Lease holder gets changed.
 	l := testLease.DeepCopy()
-	l.Spec.HolderIdentity = &testIP2
+	l.Spec.HolderIdentity = &testHolder2
 	kubeClient.CoordinationV1().Leases(testNs).Update(ctx, l, metav1.UpdateOptions{})
 	lease.Informer().GetIndexer().Add(l)
 
 	// Check that the endpoints got updated.
 	wantSubsets[0].Addresses[0].IP = testIP2
-	if err := wait.PollImmediate(10*time.Millisecond, 2*time.Second, func() (bool, error) {
+	if err := wait.PollImmediate(10*time.Millisecond, 10*time.Second, func() (bool, error) {
 		// Check the endpoints get updated.
 		got, err := el.Get(bucket1)
 		if err != nil {
@@ -170,7 +182,6 @@ func TestForwarderReconcile(t *testing.T) {
 
 func TestForwarderRetryOnSvcCreationFailure(t *testing.T) {
 	ctx, cancel, informers := rtesting.SetupFakeContextWithCancel(t)
-	logger := logging.FromContext(ctx)
 	kubeClient := fakekubeclient.Get(ctx)
 	lease := fakeleaseinformer.Get(ctx)
 
@@ -184,7 +195,8 @@ func TestForwarderRetryOnSvcCreationFailure(t *testing.T) {
 		waitInformers()
 	}()
 
-	New(ctx, logger, kubeClient, testIP1, testBs, noOp)
+	os.Setenv("POD_IP", testIP1)
+	must(t, LeaseBasedProcessor(ctx, New(ctx, testBs), noOp))
 
 	svcCreation := 0
 	retried := make(chan struct{})
@@ -211,7 +223,6 @@ func TestForwarderRetryOnSvcCreationFailure(t *testing.T) {
 
 func TestForwarderRetryOnEndpointsCreationFailure(t *testing.T) {
 	ctx, cancel, informers := rtesting.SetupFakeContextWithCancel(t)
-	logger := logging.FromContext(ctx)
 	kubeClient := fakekubeclient.Get(ctx)
 	lease := fakeleaseinformer.Get(ctx)
 
@@ -225,7 +236,8 @@ func TestForwarderRetryOnEndpointsCreationFailure(t *testing.T) {
 		waitInformers()
 	}()
 
-	New(ctx, logger, kubeClient, testIP1, testBs, noOp)
+	os.Setenv("POD_IP", testIP1)
+	must(t, LeaseBasedProcessor(ctx, New(ctx, testBs), noOp))
 
 	endpointsCreation := 0
 	retried := make(chan struct{})
@@ -252,7 +264,6 @@ func TestForwarderRetryOnEndpointsCreationFailure(t *testing.T) {
 
 func TestForwarderRetryOnEndpointsUpdateFailure(t *testing.T) {
 	ctx, cancel, informers := rtesting.SetupFakeContextWithCancel(t)
-	logger := logging.FromContext(ctx)
 	kubeClient := fakekubeclient.Get(ctx)
 	endpoints := fakeendpointsinformer.Get(ctx)
 	lease := fakeleaseinformer.Get(ctx)
@@ -267,7 +278,8 @@ func TestForwarderRetryOnEndpointsUpdateFailure(t *testing.T) {
 		waitInformers()
 	}()
 
-	New(ctx, logger, kubeClient, testIP1, testBs, noOp)
+	os.Setenv("POD_IP", testIP1)
+	must(t, LeaseBasedProcessor(ctx, New(ctx, testBs), noOp))
 
 	endpointsUpdate := 0
 	retried := make(chan struct{})
@@ -282,7 +294,7 @@ func TestForwarderRetryOnEndpointsUpdateFailure(t *testing.T) {
 		},
 	)
 
-	e := &v1.Endpoints{
+	e := &corev1.Endpoints{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      bucket1,
 			Namespace: testNs,
@@ -302,7 +314,6 @@ func TestForwarderRetryOnEndpointsUpdateFailure(t *testing.T) {
 
 func TestForwarderSkipReconciling(t *testing.T) {
 	ctx, cancel, informers := rtesting.SetupFakeContextWithCancel(t)
-	logger := logging.FromContext(ctx)
 	kubeClient := fakekubeclient.Get(ctx)
 	lease := fakeleaseinformer.Get(ctx)
 
@@ -316,7 +327,8 @@ func TestForwarderSkipReconciling(t *testing.T) {
 		waitInformers()
 	}()
 
-	New(ctx, logger, kubeClient, testIP1, testBs, noOp)
+	os.Setenv("POD_IP", testIP1)
+	must(t, LeaseBasedProcessor(ctx, New(ctx, testBs), noOp))
 
 	svcCreated := make(chan struct{})
 	kubeClient.PrependReactor("create", "services",
@@ -342,12 +354,12 @@ func TestForwarderSkipReconciling(t *testing.T) {
 		description: "not autoscaler bucket lease",
 		namespace:   testNs,
 		name:        bucket2,
-		holder:      testIP1,
+		holder:      testHolder1,
 	}, {
 		description: "different namespace",
 		namespace:   "other-ns",
 		name:        bucket1,
-		holder:      testIP1,
+		holder:      testHolder1,
 	}, {
 		description: "without holder",
 		namespace:   testNs,
@@ -356,7 +368,7 @@ func TestForwarderSkipReconciling(t *testing.T) {
 		description: "not the holder",
 		namespace:   testNs,
 		name:        bucket1,
-		holder:      testIP2,
+		holder:      testHolder2,
 	}}
 	for _, tc := range testCases {
 		t.Run(tc.description, func(t *testing.T) {
@@ -390,7 +402,6 @@ func TestForwarderSkipReconciling(t *testing.T) {
 
 func TestProcess(t *testing.T) {
 	ctx, cancel, informers := rtesting.SetupFakeContextWithCancel(t)
-	logger := logging.FromContext(ctx)
 	kubeClient := fakekubeclient.Get(ctx)
 	lease := fakeleaseinformer.Get(ctx)
 
@@ -404,13 +415,16 @@ func TestProcess(t *testing.T) {
 		waitInformers()
 	}()
 
-	acceptCh := make(chan int)
+	// Make a buffered channel so it won't block the forwarder process.
+	acceptCh := make(chan int, 2)
 	acceptCount := 0
 	accept := func(sm asmetrics.StatMessage) {
 		acceptCount++
 		acceptCh <- acceptCount
 	}
-	f := New(ctx, logger, kubeClient, testIP1, hash.NewBucketSet(sets.NewString(bucket1, bucket2)), accept)
+	os.Setenv("POD_IP", testIP1)
+	f := New(ctx, hash.NewBucketSet(sets.NewString(bucket1, bucket2)))
+	must(t, LeaseBasedProcessor(ctx, f, accept))
 
 	// A Forward without any leadership information should process with retry.
 	// Stat1 should be accepted and stat2 should be forwarded.
@@ -426,17 +440,16 @@ func TestProcess(t *testing.T) {
 			Namespace: testNs,
 		},
 		Spec: coordinationv1.LeaseSpec{
-			HolderIdentity: &testIP2,
+			HolderIdentity: &testHolder2,
 		},
 	}
 	kubeClient.CoordinationV1().Leases(testNs).Create(ctx, anotherLease, metav1.CreateOptions{})
 	lease.Informer().GetIndexer().Add(anotherLease)
 
-	// Wait for the forwarder to become the leader for bucket1.
-	if err := wait.PollImmediate(10*time.Millisecond, 2*time.Second, func() (bool, error) {
-		p1 := f.getProcessor(bucket1)
-		p2 := f.getProcessor(bucket2)
-		return p1 != nil && p2 != nil && p1.holder == testIP1 && p2.holder == testIP2 && p1.conn == nil && p2.conn != nil, nil
+	if err := wait.PollImmediate(10*time.Millisecond, 10*time.Second, func() (bool, error) {
+		_, p1owned := f.getProcessor(bucket1).(*localProcessor)
+		_, p2notowned := f.getProcessor(bucket2).(*remoteProcessor)
+		return p1owned && p2notowned, nil
 	}); err != nil {
 		t.Fatalf("Timeout waiting f.processors got updated")
 	}
@@ -457,4 +470,28 @@ func TestProcess(t *testing.T) {
 
 	// Make sure Cancel can be called without crash.
 	f.Cancel()
+}
+
+func TestIsBucketOwner(t *testing.T) {
+	f := Forwarder{
+		processors: map[string]bucketProcessor{
+			bucket1: &localProcessor{
+				bkt:    bucket1,
+				accept: noOp,
+			},
+			bucket2: &remoteProcessor{
+				bkt: bucket2,
+			},
+		},
+	}
+
+	if got := f.IsBucketOwner(bucket1); got != true {
+		t.Errorf("IsBktOwner(bucket1) = %v, want false", got)
+	}
+	if got := f.IsBucketOwner(bucket2); got != false {
+		t.Errorf("IsBktOwner(bucket2) = %v, want true", got)
+	}
+	if got := f.IsBucketOwner("not-in-record"); got != false {
+		t.Errorf("IsBktOwner(not-in-record) = %v, want true", got)
+	}
 }

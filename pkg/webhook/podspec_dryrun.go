@@ -1,5 +1,5 @@
 /*
-Copyright 2020 The Knative Authors.
+Copyright 2020 The Knative Authors
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -23,9 +23,11 @@ import (
 	"strings"
 
 	"go.uber.org/zap"
+
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+
 	"knative.dev/pkg/apis"
 	kubeclient "knative.dev/pkg/client/injection/kube/client"
 	"knative.dev/pkg/logging"
@@ -33,7 +35,7 @@ import (
 	"knative.dev/serving/pkg/reconciler/revision/resources"
 )
 
-func decodeTemplate(ctx context.Context, val interface{}) (*v1.RevisionTemplateSpec, error) {
+func decodeTemplate(val interface{}) (*v1.RevisionTemplateSpec, error) {
 	templ := &v1.RevisionTemplateSpec{}
 	asData, ok := val.(map[string]interface{})
 	if !ok {
@@ -51,13 +53,13 @@ func validatePodSpec(ctx context.Context, ps v1.RevisionSpec, namespace string, 
 		Namespace:    namespace,
 	}
 
-	// Create a sample Revision from the template
+	// Create a sample Revision from the template.
 	rev := &v1.Revision{
 		ObjectMeta: om,
 		Spec:       ps,
 	}
 	rev.SetDefaults(ctx)
-	podSpec := resources.BuildPodSpec(rev, resources.BuildUserContainers(rev))
+	podSpec := resources.BuildPodSpec(rev, resources.BuildUserContainers(rev), nil /*configs*/)
 
 	// Make a sample pod with the template Revisions & PodSpec and dryrun call to API-server
 	pod := &corev1.Pod{
@@ -73,10 +75,8 @@ func dryRunPodSpec(ctx context.Context, pod *corev1.Pod, mode DryRunMode) *apis.
 	logger := logging.FromContext(ctx)
 	client := kubeclient.Get(ctx)
 
-	pods := newCreateWithOptions(client.CoreV1().RESTClient(), pod.GetNamespace())
-
 	options := metav1.CreateOptions{DryRun: []string{metav1.DryRunAll}}
-	if _, err := pods.createWithOptions(ctx, pod, options); err != nil {
+	if _, err := client.CoreV1().Pods(pod.GetNamespace()).Create(ctx, pod, options); err != nil {
 		// Ignore failures for implementations that don't support dry-run.
 		// This likely means there are other webhooks on the PodSpec Create action which do not declare sideEffects:none
 		if mode != DryRunStrict && strings.Contains(err.Error(), "does not support dry run") {
