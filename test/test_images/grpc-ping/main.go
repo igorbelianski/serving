@@ -60,7 +60,7 @@ func (s *server) PingStream(stream ping.PingService_PingStreamServer) error {
 	for {
 		req, err := stream.Recv()
 		if errors.Is(err, io.EOF) {
-			log.Printf("Ending stream")
+			log.Print("Ending stream")
 			return nil
 		}
 		if err != nil {
@@ -68,16 +68,17 @@ func (s *server) PingStream(stream ping.PingService_PingStreamServer) error {
 			return err
 		}
 
-		log.Print("Received ping: ", req.Msg)
+		log.Print("Received streamed ping: ", req.Msg)
 
 		resp := pong(req)
 
-		log.Print("Sending pong: ", resp.Msg)
+		log.Print("Sending streamed pong: ", resp.Msg)
 		err = stream.Send(resp)
 		if err != nil {
 			log.Print("Failed to send pong: ", err)
 			return err
 		}
+		log.Print("Sent streamed < < < < < < pong: s", resp.Msg)
 	}
 }
 

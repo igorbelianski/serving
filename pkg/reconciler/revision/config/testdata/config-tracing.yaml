@@ -21,7 +21,6 @@ metadata:
     serving.knative.dev/release: devel
 
 data:
-  _example: |
     ################################
     #                              #
     #    EXAMPLE CONFIGURATION     #
@@ -45,7 +44,8 @@ data:
 
     # Enable zipkin debug mode. This allows all spans to be sent to the server
     # bypassing sampling.
-    debug: "false"
+    debug: "true"
 
     # Percentage (0-1) of requests to trace
-    sample-rate: "0.1"
+    sample-rate: "1.0"
+

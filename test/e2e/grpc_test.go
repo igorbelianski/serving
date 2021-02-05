@@ -35,7 +35,9 @@ import (
 	"google.golang.org/grpc"
 
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	"knative.dev/pkg/system"
 	pkgTest "knative.dev/pkg/test"
 	"knative.dev/pkg/test/ingress"
 	"knative.dev/pkg/test/spoof"
@@ -299,7 +301,7 @@ func streamTest(tc *TestContext, host, domain string) {
 		if err != nil {
 			tc.t.Fatal("Error receiving response:", err)
 		}
-
+		tc.t.Logf("Receiveing response %v", resp.Msg)
 		got := resp.Msg
 
 		if want != got {
@@ -329,9 +331,35 @@ func testGRPC(t *testing.T, f grpcTest, fopts ...rtesting.ServiceOption) {
 		Image:   "grpc-ping",
 	}
 
-	fopts = append(fopts, rtesting.WithNamedPort("h2c"))
+	t.Logf("Service Options before:%#v", fopts)
 
-	test.EnsureTearDown(t, clients, &names)
+	if !test.ServingFlags.EnableH2CAuto {
+		fopts = append(fopts, rtesting.WithNamedPort("h2c"))
+	}
+
+	// prevent shutdown to ensure no race conditions on log collection
+	fopts = append(
+		fopts,
+		rtesting.WithConfigAnnotations(map[string]string{autoscaling.MinScaleAnnotationKey: "1"}))
+
+	t.Logf("Service Options EnableH2CAuto:%#v", test.ServingFlags.EnableH2CAuto)
+
+	t.Logf("System.namespace:%#v", system.Namespace())
+
+	cm, err := clients.KubeClient.GetConfigMap(system.Namespace()).Get(context.Background(), "config-observability", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("Fail to get ConfigMap config-observability: %v", err)
+	} else {
+		t.Log("<<<<CONFIGMAP>>>>>")
+		t.Log(cm)
+	}
+
+	// TODO  modify config map
+	// set config map
+	// try to capture logs at the end of te test sleep ?  something else ?
+
+	// test.EnsureTearDown(t, clients, &names)
+
 	resources, err := v1test.CreateServiceReady(t, clients, &names, fopts...)
 	if err != nil {
 		t.Fatalf("Failed to create initial Service: %v: %v", names.Service, err)
@@ -366,6 +394,10 @@ func testGRPC(t *testing.T, f grpcTest, fopts ...rtesting.ServiceOption) {
 		names:     names,
 		resources: resources,
 	}, host, url.Hostname())
+
+	t.Log("PRE SLEEP")
+	time.Sleep(time.Second * 20) // is there a way to get logs reliably without this ?
+	t.Log("POST SLEEP")
 }
 
 func TestGRPCUnaryPing(t *testing.T) {

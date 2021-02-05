@@ -37,10 +37,11 @@ func (rt RoundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) {
 
 func newAutoTransport(v1, v2 http.RoundTripper) http.RoundTripper {
 	return RoundTripperFunc(func(r *http.Request) (*http.Response, error) {
-		t := v1
+		t := v2
 		if r.ProtoMajor == 2 {
 			t = v2
 		}
+		// TODO drop down to v1 only if we are certain v2 isn't supported
 		return t.RoundTrip(r)
 	})
 }
@@ -113,7 +114,7 @@ func NewProberTransport() http.RoundTripper {
 }
 
 // NewAutoTransport creates a RoundTripper that can use appropriate transport
-// based on the request's HTTP version.
+// based on the request's HTTP version an/or capabilities of the target service
 func NewAutoTransport(maxIdle, maxIdlePerHost int) http.RoundTripper {
 	return newAutoTransport(
 		newHTTPTransport(false /*disable keep-alives*/, maxIdle, maxIdlePerHost),

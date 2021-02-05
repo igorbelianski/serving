@@ -42,6 +42,7 @@ type ServingEnvironmentFlags struct {
 	Replicas            int    // The number of controlplane replicas being run.
 	EnableAlphaFeatures bool   // Indicates whether we run tests for alpha features
 	EnableBetaFeatures  bool   // Indicates whether we run tests for beta features
+	EnableH2CAuto       bool   // Skips setting H2C flag and rely on auto detectio.
 }
 
 func initializeServingFlags() *ServingEnvironmentFlags {
@@ -119,6 +120,15 @@ func initializeServingFlags() *ServingEnvironmentFlags {
 			"Set this flag to run tests against beta features")
 	} else {
 		f.EnableBetaFeatures = fl.Value.(flag.Getter).Get().(bool)
+	}
+
+	if fl := flag.Lookup("enable-h2c-auto"); fl == nil {
+		flag.BoolVar(&f.EnableH2CAuto,
+			"enable-h2c-auto",
+			false,
+			"Set this flag to run tests without h2c port name")
+	} else {
+		f.EnableH2CAuto = fl.Value.(flag.Getter).Get().(bool)
 	}
 
 	return &f

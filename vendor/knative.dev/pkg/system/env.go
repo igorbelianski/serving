@@ -19,6 +19,7 @@ package system
 import (
 	"fmt"
 	"os"
+	"strings"
 )
 
 const (
@@ -29,8 +30,10 @@ const (
 // Namespace returns the name of the K8s namespace where our system components
 // run.
 func Namespace() string {
+	println("WOOOO HOOOO ")
 	if ns := os.Getenv(NamespaceEnvKey); ns != "" {
-		return ns
+		namespaces := strings.Split(ns, ",")
+		return namespaces[0]
 	}
 
 	panic(fmt.Sprintf(`The environment variable %q is not set

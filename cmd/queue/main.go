@@ -105,6 +105,100 @@ func init() {
 	maxprocs.Set()
 }
 
+/*
+// Make handler a closure for testing.
+func proxyHandler(breaker *queue.Breaker, stats *network.RequestStats, tracingEnabled bool, next http.Handler, logger *zap.SugaredLogger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		logger.Error("FUNC HANDLER 123 !!!! ")
+		if network.IsKubeletProbe(r) {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		if tracingEnabled {
+			proxyCtx, proxySpan := trace.StartSpan(r.Context(), "queue_proxy")
+			r = r.WithContext(proxyCtx)
+			defer proxySpan.End()
+		}
+
+		// Metrics for autoscaling.
+		in, out := network.ReqIn, network.ReqOut
+		if activator.Name == network.KnativeProxyHeader(r) {
+			in, out = network.ProxiedIn, network.ProxiedOut
+		}
+		stats.HandleEvent(network.ReqEvent{Time: time.Now(), Type: in})
+		defer func() {
+			stats.HandleEvent(network.ReqEvent{Time: time.Now(), Type: out})
+		}()
+		network.RewriteHostOut(r)
+
+		// Enforce queuing and concurrency limits.
+		if breaker != nil {
+			var waitSpan *trace.Span
+			if tracingEnabled {
+				_, waitSpan = trace.StartSpan(r.Context(), "queue_wait")
+			}
+			if err := breaker.Maybe(r.Context(), func() {
+				waitSpan.End()
+				next.ServeHTTP(w, r)
+			}); err != nil {
+				waitSpan.End()
+				switch err {
+				case context.DeadlineExceeded, queue.ErrRequestQueueFull:
+					http.Error(w, err.Error(), http.StatusServiceUnavailable)
+				default:
+					w.WriteHeader(http.StatusInternalServerError)
+				}
+			}
+		} else {
+			logger.Error("FUNC HANDLER request header: %v ", r.Header)
+			next.ServeHTTP(w, r)
+			logger.Error("FUNC HANDLER resp header %v ", w.Header())
+		}
+	}
+}
+
+func knativeProbeHandler(logger *zap.SugaredLogger, healthState *health.State, prober func() bool, isAggressive bool, tracingEnabled bool, next http.Handler) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ph := network.KnativeProbeHeader(r)
+
+		if ph == "" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		var probeSpan *trace.Span
+		if tracingEnabled {
+			_, probeSpan = trace.StartSpan(r.Context(), "probe")
+			defer probeSpan.End()
+		}
+
+		if ph != queue.Name {
+			http.Error(w, fmt.Sprintf(badProbeTemplate, ph), http.StatusBadRequest)
+			probeSpan.Annotate([]trace.Attribute{
+				trace.StringAttribute("queueproxy.probe.error", fmt.Sprintf(badProbeTemplate, ph))}, "error")
+			return
+		}
+
+		if prober == nil {
+			http.Error(w, "no probe", http.StatusInternalServerError)
+			probeSpan.Annotate([]trace.Attribute{
+				trace.StringAttribute("queueproxy.probe.error", "no probe")}, "error")
+			return
+		}
+
+		healthState.HandleHealthProbe(func() bool {
+			if !prober() {
+				probeSpan.Annotate([]trace.Attribute{
+					trace.StringAttribute("queueproxy.probe.error", "container not ready")}, "error")
+				return false
+			}
+			return true
+		}, isAggressive, w)
+	}
+}
+*/
+
 func main() {
 	flag.Parse()
 
@@ -140,6 +234,8 @@ func main() {
 			Name:      env.ServingRevision,
 		}.String()),
 		zap.String(logkey.Pod, env.ServingPod))
+
+	logger.Error("STARTING QUEUE PROXY HERE !!!! ")
 
 	// Report stats on Go memory usage every 30 seconds.
 	metrics.MemStatsOrDie(ctx)
@@ -295,6 +391,7 @@ func buildServer(ctx context.Context, env config, healthState *health.State, rp 
 		composedHandler = requestAppMetricsHandler(logger, composedHandler, breaker, env)
 	}
 	composedHandler = queue.ProxyHandler(breaker, stats, tracingEnabled, composedHandler)
+	//   composedHandler = proxyHandler(breaker, stats, tracingEnabled, composedHandler, logger)
 	composedHandler = queue.ForwardedShimHandler(composedHandler)
 	composedHandler = handler.NewTimeToFirstByteTimeoutHandler(composedHandler, "request timeout", handler.StaticTimeoutFunc(timeout))
 

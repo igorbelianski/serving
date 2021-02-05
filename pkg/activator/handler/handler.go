@@ -73,6 +73,7 @@ func (a *activationHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if tracingEnabled {
 		tryContext, trySpan = trace.StartSpan(r.Context(), "throttler_try")
 	}
+	logger.Errorf("activator SOME LOGGGGGGGGGGGGING  serveHTTP HERE %v", r)
 
 	if err := a.throttler.Try(tryContext, func(dest string) error {
 		trySpan.End()
@@ -86,7 +87,7 @@ func (a *activationHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			Host:   dest,
 		}, tracingEnabled)
 		proxySpan.End()
-
+		logger.Errorf("    activator serveHTTP HERE looks good  %v", r)
 		return nil
 	}); err != nil {
 		// Set error on our capacity waiting span and end it.
@@ -100,6 +101,7 @@ func (a *activationHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		} else {
 			w.WriteHeader(http.StatusInternalServerError)
 		}
+		logger.Errorf("    activator serveHTTP HERE error handling   %v", r)
 	}
 }
 
